@@ -1,0 +1,12 @@
+{
+    "MaxFileSize": 100000,
+    "GzipEnabled": true,
+    "CacheExceptions": [
+        "^/exception-url-\\d+$",
+        "^/special-(page|section)/.*"
+    ],
+    "QueryIgnoreEnabled": false,
+    "QuerySortingEnabled": true,
+    "ResponseTimeLoggingEnabled": true,
+    "CleanupFrequency": 60
+}

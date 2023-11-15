@@ -1,0 +1,12 @@
+version: '3.9'
+services:
+  reverse-proxy:
+    image: wcs
+    ports:
+      - "80:80"
+    container_name: wcs
+    volumes:
+      - ./web_cache_server:/build/web_cache_server
+    environment:
+      - KEY1=value1
+      - KEY2=value2 
