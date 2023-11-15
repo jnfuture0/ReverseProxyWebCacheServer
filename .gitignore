@@ -1,0 +1,4 @@
+# Ignore log files and directory
+/web_cache_server/log_body/
+/web_cache_server/log_image/
+/web_cache_server/log_file.txt
