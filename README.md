@@ -14,8 +14,6 @@
 
 
 
-
-
 # ResoponseCode에 따른 Cache Control
 
 저장
@@ -36,6 +34,18 @@
 - 307 : Temporary Redirect
     임시 리다이렉션. 리다이렉션은 캐시를 저장하지 않음.
     
+
+
+
+# HTTP Method에 따른 Cache Control
+
+저장
+- GET, HEAD : 안전하며 멱등성을 가지고, 캐시도 가능
+
+미저장
+- POST, PATCH : 유효성이 표시되고 Content-Location 헤더가 설정된 경우 캐시될 수 있지만 거의 구현하지 않음
+- 그 외 : 캐시 가능하지 않음
+
 
 
 

@@ -195,6 +195,10 @@ func modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
+	if !checkMethodCacheSave(resp.Request.Method) {
+		return nil
+	}
+
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
@@ -394,6 +398,15 @@ func checkHeaderCacheSave(resp *http.Response) bool {
 	}
 
 	return true
+}
+
+func checkMethodCacheSave(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	default:
+		return false
+	}
 }
 
 func IsCacheControlSaveAllowed(cacheControl string) bool {
