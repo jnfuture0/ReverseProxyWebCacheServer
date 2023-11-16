@@ -24,6 +24,7 @@ const (
 	GZIP        string = "gzip"
 	GLOBAL_HOST string = "global.gmarket.co.kr"
 	IMAGE_HOST  string = "image.gmarket.co.kr"
+	CUSTOM_HOST string = "jn.wcs.co.kr"
 	CACHED      string = " (Cached)"
 	NOT_CACHED  string = " (Not cached)"
 )
@@ -91,6 +92,7 @@ func OpenServer() {
 	proxyMap := map[string]*httputil.ReverseProxy{
 		GLOBAL_HOST: getReverseProxy("http://global.gmarket.co.kr/"),
 		IMAGE_HOST:  getReverseProxy("http://image.gmarket.co.kr/"),
+		CUSTOM_HOST: getReverseProxy("http://jn.wcs.co.kr/"),
 	}
 	pHandler := &proxyHandler{proxyMap}
 	http.Handle("/", pHandler)
@@ -149,8 +151,13 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path == "/StatusPage" {
+	if r.Host == CUSTOM_HOST && r.URL.Path == "/statuspage" { //TODO : status, purge
 		showStatusPage(w)
+		return
+	}
+
+	if r.Host == CUSTOM_HOST && r.Method == http.MethodDelete && r.URL.Path == "/purge" {
+		handlePurge(w, r)
 		return
 	}
 
@@ -175,6 +182,47 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func modifyResponse(resp *http.Response) error {
+	url := resp.Request.URL
+	uri := GetURI(resp.Request)
+
+	if isCacheException(uri) {
+		myLogger.logger.Printf("Cache Exception : %s\n", uri)
+		return nil
+	}
+
+	if !checkHeaderCacheSave(resp) {
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Unzip gzip
+	var dirName string
+	if url.Host == GLOBAL_HOST {
+		switch resp.Header.Get("Content-Encoding") {
+		case "gzip":
+			body = GUnzip(body)
+		}
+		dirName = "./web_cache_server/log_body"
+	} else {
+		dirName = "./web_cache_server/log_image"
+	}
+	defer resp.Body.Close()
+
+	// Check File Size
+	if len(body) > int(config.MaxFileSize) {
+		myLogger.logger.Printf("File size over. Do not cache : %s (%d bytes)\n", url.String(), len(body))
+		return nil
+	}
+
+	// Cache File
+	cacheFile(body, dirName, resp, url.String())
+
+	return nil
+}
+
 func showStatusPage(w http.ResponseWriter) {
 	percentage := float64(hitCount) / float64(serveHttpCount) * 100
 
@@ -183,6 +231,24 @@ func showStatusPage(w http.ResponseWriter) {
 	fmt.Fprintf(&sb, "\nServeHttpCount = %d", serveHttpCount)
 	fmt.Fprintf(&sb, "\n\nHit Percentage = %.2f%%", percentage)
 	w.Write([]byte(sb.String()))
+}
+
+func handlePurge(w http.ResponseWriter, r *http.Request) {
+	pattern := r.URL.Query().Get("pattern")
+	compiledPattern, err := regexp.Compile(pattern)
+	if err != nil {
+		myLogger.logger.Printf("정규 표현식 컴파일 오류: %s (%v)\n", pattern, err)
+		w.WriteHeader(400)
+		return
+	}
+
+	for _, sci := range sciList {
+		for sha256, ci := range sci.ciMap {
+			if compiledPattern.MatchString(ci.url) {
+				removeCacheFile(sci, sha256, ci, "Purge")
+			}
+		}
+	}
 }
 
 func IsFileExist(rw *sync.RWMutex, dir string) bool {
@@ -234,47 +300,6 @@ func GUnzip(data []byte) []byte {
 	}
 	defer reader.Close()
 	return body
-}
-
-func modifyResponse(resp *http.Response) error {
-	url := resp.Request.URL
-	uri := GetURI(resp.Request)
-
-	if isCacheException(uri) {
-		myLogger.logger.Printf("Cache Exception : %s\n", uri)
-		return nil
-	}
-
-	if !checkHeaderCacheSave(resp) {
-		return nil
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-
-	// Unzip gzip
-	var dirName string
-	if url.Host == GLOBAL_HOST {
-		switch resp.Header.Get("Content-Encoding") {
-		case "gzip":
-			body = GUnzip(body)
-		}
-		dirName = "./web_cache_server/log_body"
-	} else {
-		dirName = "./web_cache_server/log_image"
-	}
-	defer resp.Body.Close()
-
-	// Check File Size
-	if len(body) > int(config.MaxFileSize) {
-		myLogger.logger.Printf("File size over. Do not cache : %s (%d bytes)\n", url.String(), len(body))
-		return nil
-	}
-
-	// Cache File
-	cacheFile(body, dirName, resp, url.String())
-
-	return nil
 }
 
 func GetURI(req *http.Request) string {
@@ -432,7 +457,7 @@ func cleanupExpiredCaches() {
 		for _, sci := range sciList {
 			for sha256, ci := range sci.ciMap {
 				if ci.expirationTime.Before(time.Now()) {
-					removeCacheFile(sci, sha256, ci)
+					removeCacheFile(sci, sha256, ci, "Expired")
 				}
 			}
 		}
@@ -440,7 +465,7 @@ func cleanupExpiredCaches() {
 	}
 }
 
-func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem) {
+func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem, msg string) {
 	dir := ci.dir
 	sci.rw.Lock()
 	defer sci.rw.Unlock()
@@ -449,7 +474,7 @@ func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem) {
 		myLogger.logger.Printf("파일 삭제 실패 : %e, 삭제하지 못한 파일 : %s\n", err, dir)
 		return
 	}
-	myLogger.logger.Printf("Expired) 캐시가 삭제되었습니다 : %s\n", ci.url)
+	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", msg, ci.url)
 	delete(sci.ciMap, sha256)
 }
 
