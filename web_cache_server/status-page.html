@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Status Page</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        th,
+        td {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            text-align: center;
+        }
+
+        p {
+            font-size: 120%;
+        }
+    </style>
+    <!-- <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+    <script type="text/javascript">
+        google.charts.load("current", { packages: ["corechart"] });
+        google.charts.setOnLoadCallback(drawChart);
+        function drawChart() {
+            var data = google.visualization.arrayToDataTable([
+                ['Task', 'Hours per Day'],
+                ['Work', 11],
+                ['Eat', 2],
+                ['Commute', 2],
+                ['Watch TV', 2],
+                ['Sleep', 7]
+            ]);
+
+            var options = {
+                title: '{{.HitData}}',
+                pieHole: 0.4,
+                legend: 'none',
+            };
+
+            var chart = new google.visualization.PieChart(document.getElementById('donutchart'));
+            chart.draw(data, options);
+        }
+    </script> -->
+</head>
+
+
+
+<body>
+    <h1>Status Page</h1>
+    <p style="margin-top: 20px;">Information of HIT count</p>
+    <table border="1">
+        <tr>
+            <th>-</th>
+            <th>Hit Count</th>
+            <th>Requests</th>
+            <th>Hit Percentage</th>
+        </tr>
+        {{range .HitData}}
+        <tr>
+            <th>{{.Title}}</th>
+            <td>{{.Hit}}</td>
+            <td>{{.Requests}}</td>
+            <td>{{.Percent}}%</td>
+        </tr>
+        {{end}}
+    </table>
+
+    <!-- <div id="donutchart" style="width: 900px; height: 500px;"></div> -->
+
+    <p style="margin-top: 80px;">About Config</p>
+
+    <table border="1">
+        <tr>
+            <th>Config</th>
+            <th>Value</th>
+        </tr>
+        {{range .ConfigData}}
+        <tr>
+            <td style="text-align: start;">{{.Name}}</td>
+            <td>{{.Value}}</td>
+        </tr>
+        {{end}}
+    </table>
+</body>
+
+</html>

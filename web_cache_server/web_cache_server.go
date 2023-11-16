@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -27,16 +29,19 @@ const (
 	CUSTOM_HOST string = "jn.wcs.co.kr"
 	CACHED      string = " (Cached)"
 	NOT_CACHED  string = " (Not cached)"
+	CONFIG_PATH string = "./web_cache_server/config.json"
 )
 
 var (
-	sciList        []*safeCacheItem
-	sendCacheNum   = 0
-	cachedFileNum  = 0
-	hitCount       = 0
-	serveHttpCount = 0
-	config         = Config{}
-	myLogger       *MyLogger
+	sciList             []*safeCacheItem
+	sendCacheNum        = 0
+	cachedFileNum       = 0
+	globalHitCount      = 0
+	globalRequestsCount = 0
+	imageHitCount       = 0
+	imageRequestsCount  = 0
+	config              = Config{}
+	myLogger            *MyLogger
 )
 
 type safeCacheItem struct {
@@ -68,6 +73,21 @@ type proxyHandler struct {
 	proxy map[string]*httputil.ReverseProxy
 }
 
+type HTMLData struct {
+	HitData    []htmlHitData
+	ConfigData []htmlConfigData
+}
+type htmlHitData struct {
+	Title    string
+	Hit      int
+	Requests int
+	Percent  float64
+}
+type htmlConfigData struct {
+	Name  string
+	Value string
+}
+
 func init() {
 	OpenServer()
 }
@@ -76,7 +96,7 @@ func OpenServer() {
 	//For test
 	removeDirForTest()
 
-	loadConfig("./web_cache_server/config.json")
+	loadConfig()
 
 	logFile := openLoggerFile("./web_cache_server/log_file.txt")
 	defer logFile.Close()
@@ -118,8 +138,8 @@ func removeDirForTest() {
 	os.Remove("./web_cache_server/log_file.txt")
 }
 
-func loadConfig(fName string) {
-	configData, err := os.ReadFile(fName)
+func loadConfig() {
+	configData, err := os.ReadFile(CONFIG_PATH)
 	if err != nil {
 		panic(err)
 	}
@@ -143,7 +163,7 @@ func getReverseProxy(uri string) *httputil.ReverseProxy {
 }
 
 func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	serveHttpCount += 1
+	increseRequestsCount(r.Host)
 
 	reverseProxy, ok := ph.proxy[r.Host]
 	if !ok {
@@ -151,7 +171,7 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Host == CUSTOM_HOST && r.URL.Path == "/statuspage" { //TODO : status, purge
+	if r.Host == CUSTOM_HOST && r.URL.Path == "/statuspage" {
 		showStatusPage(w)
 		return
 	}
@@ -168,7 +188,7 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sTime := time.Now()
 	var isCached string
 	if IsFileExist(sci.rw, ci.dir) && exists {
-		responseByCacheItem(sci.rw, ci.dir, w, getIsGzipAccepted(r))
+		responseByCacheItem(sci.rw, ci.dir, w, getIsGzipAccepted(r), r.Host)
 		isCached = CACHED
 	} else {
 		reverseProxy.ServeHTTP(w, r)
@@ -227,14 +247,80 @@ func modifyResponse(resp *http.Response) error {
 	return nil
 }
 
-func showStatusPage(w http.ResponseWriter) {
-	percentage := float64(hitCount) / float64(serveHttpCount) * 100
+func increseRequestsCount(host string) {
+	switch host {
+	case GLOBAL_HOST:
+		globalRequestsCount += 1
+	case IMAGE_HOST:
+		imageRequestsCount += 1
+	}
+}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Hit Count = %d", hitCount)
-	fmt.Fprintf(&sb, "\nServeHttpCount = %d", serveHttpCount)
-	fmt.Fprintf(&sb, "\n\nHit Percentage = %.2f%%", percentage)
-	w.Write([]byte(sb.String()))
+func increseHitCount(host string, dir string) {
+	switch host {
+	case GLOBAL_HOST:
+		globalHitCount += 1
+	case IMAGE_HOST:
+		imageHitCount += 1
+	default:
+		fmt.Println("Something Error in increseHitCount : " + host + ", " + dir)
+	}
+}
+
+func showStatusPage(w http.ResponseWriter) {
+	getPercent := func(hit int, req int) float64 {
+		if hit == 0 {
+			return 0
+		}
+		perFloat := float64(hit) / float64(req) * 100
+		return math.Round(perFloat*100) / 100
+	}
+
+	globalPercent := getPercent(globalHitCount, globalRequestsCount)
+	imagePercent := getPercent(imageHitCount, imageRequestsCount)
+	totalPercent := getPercent(globalHitCount+imageHitCount, globalRequestsCount+imageRequestsCount)
+
+	hdList := []htmlHitData{
+		{"Global", globalHitCount, globalRequestsCount, globalPercent},
+		{"Image", imageHitCount, imageRequestsCount, imagePercent},
+		{"Total", globalHitCount + imageHitCount, globalRequestsCount + imageRequestsCount, totalPercent},
+	}
+
+	cdList := []htmlConfigData{}
+	cd := htmlConfigData{}
+	configDatas := getConfigDatas()
+	for key, value := range configDatas {
+		val := fmt.Sprintf("%v", value)
+		cd.Name = key
+		cd.Value = val
+		cdList = append(cdList, cd)
+	}
+
+	tmpl, err := template.ParseFiles("./web_cache_server/status-page.html")
+	if err != nil {
+		panic(err)
+	}
+
+	hd := HTMLData{hdList, cdList}
+	err = tmpl.Execute(w, hd)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func getConfigDatas() map[string]interface{} {
+	file, err := os.ReadFile(CONFIG_PATH)
+	if err != nil {
+		panic(err)
+	}
+
+	var data map[string]interface{}
+	err = json.Unmarshal(file, &data)
+	if err != nil {
+		panic(err)
+	}
+
+	return data
 }
 
 func handlePurge(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +349,7 @@ func IsFileExist(rw *sync.RWMutex, dir string) bool {
 	return !os.IsNotExist(err)
 }
 
-func responseByCacheItem(rw *sync.RWMutex, dir string, w http.ResponseWriter, isGzipAccepted bool) {
+func responseByCacheItem(rw *sync.RWMutex, dir string, w http.ResponseWriter, isGzipAccepted bool, host string) {
 	rw.RLock()
 	fileBody, err := os.ReadFile(dir)
 	if err != nil {
@@ -281,7 +367,7 @@ func responseByCacheItem(rw *sync.RWMutex, dir string, w http.ResponseWriter, is
 
 	rw.Lock()
 	sendCacheNum += 1
-	hitCount += 1
+	increseHitCount(host, dir)
 	rw.Unlock()
 }
 
@@ -478,7 +564,7 @@ func cleanupExpiredCaches() {
 	}
 }
 
-func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem, msg string) {
+func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem, logMsg string) {
 	dir := ci.dir
 	sci.rw.Lock()
 	defer sci.rw.Unlock()
@@ -487,7 +573,7 @@ func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem, msg string
 		myLogger.logger.Printf("파일 삭제 실패 : %e, 삭제하지 못한 파일 : %s\n", err, dir)
 		return
 	}
-	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", msg, ci.url)
+	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, ci.url)
 	delete(sci.ciMap, sha256)
 }
 
