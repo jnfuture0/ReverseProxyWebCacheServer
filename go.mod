@@ -1,3 +1,3 @@
-module jnlee_project
+module jnlee
 
 go 1.21.3

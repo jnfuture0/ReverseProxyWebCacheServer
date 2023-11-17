@@ -1,4 +1,4 @@
-package web_cache_server
+package cache
 
 import (
 	"bytes"
@@ -29,7 +29,7 @@ const (
 	CUSTOM_HOST string = "jn.wcs.co.kr"
 	CACHED      string = " (Cached)"
 	NOT_CACHED  string = " (Not cached)"
-	CONFIG_PATH string = "./web_cache_server/config.json"
+	CONFIG_PATH string = "./cache/config.json"
 )
 
 var (

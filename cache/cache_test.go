@@ -1,4 +1,4 @@
-package web_cache_server_test
+package cache_test
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"jnlee_project/web_cache_server"
+	"jnlee/cache"
 )
 
 func TestIsFileExist(t *testing.T) {
@@ -37,7 +37,7 @@ func TestGetSha256(t *testing.T) {
 	}
 
 	for key, val := range dummy {
-		sha256 := web_cache_server.GetSha256(key)
+		sha256 := cache.GetSha256(key)
 		if sha256 != val {
 			fmt.Printf("key = %s\n", key)
 			t.Error("WrongResult")
@@ -54,7 +54,7 @@ func TestGetHashKey(t *testing.T) {
 	}
 
 	for key, val := range dummy {
-		hk := web_cache_server.GetHashkey(key)
+		hk := cache.GetHashkey(key)
 		if hk != val {
 			fmt.Printf("key = %s, hk = %d\n", key, hk)
 			t.Error("WrongResult")
@@ -73,7 +73,7 @@ func TestIsCacheSaveAllowed(t *testing.T) {
 	}
 
 	for key, val := range dummy {
-		ans := web_cache_server.IsCacheControlSaveAllowed(key)
+		ans := cache.IsCacheControlSaveAllowed(key)
 		if ans != val {
 			fmt.Printf("key = %s, ans = %t\n", key, ans)
 			t.Error("WrongResult")
@@ -95,7 +95,7 @@ func TestIsContentTypeSaveAllowed(t *testing.T) {
 	}
 
 	for key, val := range dummy {
-		ans := web_cache_server.IsContentTypeSaveAllowed(key)
+		ans := cache.IsContentTypeSaveAllowed(key)
 		if ans != val {
 			fmt.Printf("key = %s, ans = %t\n", key, ans)
 			t.Error("WrongResult")
@@ -113,8 +113,8 @@ func TestGzipDecompress(t *testing.T) {
 
 	for _, val := range dummy {
 		b := []byte(val)
-		af := web_cache_server.GZip(b)
-		be := web_cache_server.GUnzip(af)
+		af := cache.GZip(b)
+		be := cache.GUnzip(af)
 
 		if len(b) != len(be) {
 			t.Error("Wrong")
@@ -123,17 +123,17 @@ func TestGzipDecompress(t *testing.T) {
 }
 
 func TestGetURI(t *testing.T) {
-	dummy := []*web_cache_server.Config{
-		&web_cache_server.Config{
+	dummy := []*cache.Config{
+		&cache.Config{
 			0, true, []string{}, true, true, true, 0,
 		},
-		&web_cache_server.Config{
+		&cache.Config{
 			0, true, []string{}, true, false, true, 0,
 		},
-		&web_cache_server.Config{
+		&cache.Config{
 			0, true, []string{}, false, true, true, 0,
 		},
-		&web_cache_server.Config{
+		&cache.Config{
 			0, true, []string{}, false, false, false, 0,
 		},
 	}
@@ -157,7 +157,7 @@ func TestGetURI(t *testing.T) {
 	}
 }
 
-func GetURI(req *http.Request, config *web_cache_server.Config) string {
+func GetURI(req *http.Request, config *cache.Config) string {
 	myUrl := req.URL
 	host := func() string {
 		if len(myUrl.Host) == 0 {
