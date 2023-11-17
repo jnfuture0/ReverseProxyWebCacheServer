@@ -4,9 +4,9 @@ services:
     image: wcs
     ports:
       - "80:80"
-    container_name: wcs
+    container_name: wcs_container
     volumes:
-      - ./web_cache_server:/build/web_cache_server
+      - ./wcs:/build/wcs
     environment:
       - KEY1=value1
-      - KEY2=value2 
+      - KEY2=value2

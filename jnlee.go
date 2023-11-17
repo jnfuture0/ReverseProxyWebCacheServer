@@ -1,7 +1,7 @@
 package main
 
-import "jnlee/cache"
+import "jnlee/wcs"
 
 func main() {
-	cache.OpenServer()
+	wcs.OpenServer()
 }
