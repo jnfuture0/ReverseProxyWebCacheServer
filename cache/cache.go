@@ -98,7 +98,7 @@ func OpenServer() {
 
 	loadConfig()
 
-	logFile := openLoggerFile("./web_cache_server/log_file.txt")
+	logFile := openLoggerFile("./cache/log_file.txt")
 	defer logFile.Close()
 	myLogger = openLogger(logFile)
 
@@ -133,9 +133,9 @@ func OpenServer() {
 
 // 디렉토리가 새로 만들어지는지 확인하기 위해, 프로그램 시작 시 기존 디렉토리 삭제
 func removeDirForTest() {
-	os.RemoveAll("./web_cache_server/log_body")
-	os.RemoveAll("./web_cache_server/log_image")
-	os.Remove("./web_cache_server/log_file.txt")
+	os.RemoveAll("./cache/log_body")
+	os.RemoveAll("./cache/log_image")
+	os.Remove("./cache/log_file.txt")
 }
 
 func loadConfig() {
@@ -229,9 +229,9 @@ func modifyResponse(resp *http.Response) error {
 		case "gzip":
 			body = GUnzip(body)
 		}
-		dirName = "./web_cache_server/log_body"
+		dirName = "./cache/log_body"
 	} else {
-		dirName = "./web_cache_server/log_image"
+		dirName = "./cache/log_image"
 	}
 	defer resp.Body.Close()
 
@@ -296,7 +296,7 @@ func showStatusPage(w http.ResponseWriter) {
 		cdList = append(cdList, cd)
 	}
 
-	tmpl, err := template.ParseFiles("./web_cache_server/status-page.html")
+	tmpl, err := template.ParseFiles("./cache/status-page.html")
 	if err != nil {
 		panic(err)
 	}
