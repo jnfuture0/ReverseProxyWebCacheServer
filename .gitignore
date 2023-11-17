@@ -1,5 +1,5 @@
 # Ignore log files and directory
-/cache/log_body/
-/cache/log_image/
-/cache/log_file.txt
+/wcs/log_body/
+/wcs/log_image/
+/wcs/log_file.txt
 /jnlee
