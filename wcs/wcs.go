@@ -20,6 +20,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/go-redis/redis"
 )
 
 const (
@@ -33,7 +35,7 @@ const (
 )
 
 var (
-	safeCacheItemList   []*safeCacheItem
+	safeClientList      []*safeClient
 	sendCacheNum        = 0
 	cachedFileNum       = 0
 	globalHitCount      = 0
@@ -44,17 +46,17 @@ var (
 	myLogger            *MyLogger
 )
 
-type safeCacheItem struct {
-	rwMutex      *sync.RWMutex
-	cacheItemMap map[string]cacheItem
+type safeClient struct {
+	rwMutex *sync.RWMutex
+	client  *redis.Client
 }
 
-type cacheItem struct {
-	header         http.Header
-	url            string
-	dir            string
-	expirationTime time.Time
-	cachedTime     time.Time
+type CacheItem struct {
+	Header         http.Header
+	Body           []byte
+	URL            string
+	ExpirationTime time.Time
+	CachedTime     time.Time
 }
 
 type MyLogger struct {
@@ -100,15 +102,11 @@ func OpenServer() {
 
 	loadConfig()
 
+	initClientList()
+
 	logFile := openLoggerFile("./wcs/log_file.txt")
 	defer logFile.Close()
-	myLogger = openLogger(logFile)
-
-	// Set RWMutexs
-	for i := 0; i < 255; i++ {
-		safeCacheItem := &safeCacheItem{&sync.RWMutex{}, make(map[string]cacheItem)}
-		safeCacheItemList = append(safeCacheItemList, safeCacheItem)
-	}
+	myLogger = generateLogger(logFile)
 
 	// Set ReverseProxy
 	proxyMap := map[string]*httputil.ReverseProxy{
@@ -154,6 +152,19 @@ func loadConfig() {
 	config = *newConfig
 }
 
+func initClientList() {
+	for i := 0; i < 255; i++ {
+		port := strconv.Itoa(6379 + i)
+		redisClient := redis.NewClient(&redis.Options{
+			Addr:     "192.168.0.88:" + port,
+			Password: "",
+			DB:       i,
+		})
+		safeClient := &safeClient{&sync.RWMutex{}, redisClient}
+		safeClientList = append(safeClientList, safeClient)
+	}
+}
+
 func getReverseProxy(uri string) *httputil.ReverseProxy {
 	url, err := url.Parse(uri)
 	if err != nil {
@@ -184,13 +195,22 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	increseRequestsCount(r.Host)
 
 	uri := GetURI(r)
-	safeCacheItem := safeCacheItemList[GetHashkey(uri)]
-	cachceItem, exists := safeCacheItem.cacheItemMap[GetSha256(uri)]
+	sha256 := GetSha256(uri)
+	safeClient := safeClientList[GetHashkey(uri)]
+	safeClient.rwMutex.RLock()
+	exists, err := safeClient.client.Exists(sha256).Result()
+	if err == redis.Nil {
+		fmt.Println("Redis nil")
+	} else if err != nil {
+		fmt.Printf("err = %s\nhashKey = %d\nuri=%s\n", err, GetHashkey(uri), uri)
+		panic(err)
+	}
+	safeClient.rwMutex.RUnlock()
 
 	startTime := time.Now()
 	var isCached string
-	if IsFileExist(safeCacheItem.rwMutex, cachceItem.dir) && exists {
-		responseByCacheItem(safeCacheItem.rwMutex, cachceItem, w, getIsGzipAccepted(r), r.Host)
+	if exists == 1 { //IsFileExist(safeClient.rwMutex, ci.Dir) &&
+		responseByCacheItem(safeClient, sha256, w, r)
 		isCached = CACHED
 	} else {
 		reverseProxy.ServeHTTP(w, r)
@@ -225,15 +245,8 @@ func modifyResponse(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	// Unzip gzip
-	var dirName string
-	if url.Host == GLOBAL_HOST {
-		switch resp.Header.Get("Content-Encoding") {
-		case "gzip":
-			body = GUnzip(body)
-		}
-		dirName = "./wcs/log_body"
-	} else {
-		dirName = "./wcs/log_image"
+	if url.Host == GLOBAL_HOST && resp.Header.Get("Content-Encoding") == GZIP {
+		body = GUnzip(body)
 	}
 	defer resp.Body.Close()
 
@@ -244,7 +257,7 @@ func modifyResponse(resp *http.Response) error {
 	}
 
 	// Cache File
-	cacheFile(body, dirName, resp)
+	cacheFile(body, resp)
 
 	return nil
 }
@@ -258,7 +271,7 @@ func increseRequestsCount(host string) {
 	}
 }
 
-func increseHitCount(host string, dir string) {
+func increseHitCount(host string) {
 	switch host {
 	case GLOBAL_HOST:
 		globalHitCount += 1
@@ -332,51 +345,60 @@ func handlePurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, safeCacheItem := range safeCacheItemList {
-		for sha256, cacheItem := range safeCacheItem.cacheItemMap {
-			if compiledPattern.MatchString(cacheItem.url) {
-				removeCacheFile(safeCacheItem, sha256, cacheItem, "Purge")
+	for _, safeClient := range safeClientList {
+		safeClient.rwMutex.Lock()
+		client := safeClient.client
+		keys, err := client.Keys("*").Result()
+		if err != nil {
+			panic(err)
+		}
+
+		for _, sha256 := range keys {
+			cacheItem := getCacheItem(client, sha256)
+			if compiledPattern.MatchString(cacheItem.URL) {
+				removeCacheFile(client, sha256, cacheItem, "Purge")
 			}
 		}
+		safeClient.rwMutex.Unlock()
 	}
 }
 
-func IsFileExist(rwMutex *sync.RWMutex, dir string) bool {
+func responseByCacheItem(safeClient *safeClient, sha256 string, w http.ResponseWriter, r *http.Request) {
+	rwMutex := safeClient.rwMutex
 	rwMutex.RLock()
-	defer rwMutex.RUnlock()
-
-	_, err := os.Stat(dir)
-	return !os.IsNotExist(err)
-}
-
-func responseByCacheItem(rwMutex *sync.RWMutex, cacheItem cacheItem, w http.ResponseWriter, isGzipAccepted bool, host string) {
-	dir := cacheItem.dir
-	rwMutex.RLock()
-	fileBody, err := os.ReadFile(dir)
-	if err != nil {
-		panic(err)
-	}
+	cacheItem := getCacheItem(safeClient.client, sha256)
 	rwMutex.RUnlock()
+	fileBody := cacheItem.Body
 
-	if config.GzipEnabled && isGzipAccepted {
+	if config.GzipEnabled && getIsGzipAccepted(r) {
 		fileBody = GZip(fileBody)
-		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Encoding", GZIP)
 	}
+
 	setHeaderFromCache := func(headerKey string) {
-		headerValue := cacheItem.header.Get(headerKey)
-		w.Header().Set(headerKey, headerValue)
+		w.Header().Set(headerKey, cacheItem.Header.Get(headerKey))
 	}
 	setHeaderFromCache("Cache-Control")
 	setHeaderFromCache("Etag")
 
-	w.Header().Set("Age", strconv.Itoa(int(time.Since(cacheItem.cachedTime).Seconds())))
+	w.Header().Set("Age", strconv.Itoa(int(time.Since(cacheItem.CachedTime).Seconds())))
 	w.Header().Add("jnlee", "HIT")
 	w.Write(fileBody)
 
 	rwMutex.Lock()
 	sendCacheNum += 1
-	increseHitCount(host, dir)
+	increseHitCount(r.Host)
 	rwMutex.Unlock()
+}
+
+func getCacheItem(client *redis.Client, sha256 string) CacheItem {
+	ciJSON, err := client.Get(sha256).Result()
+	if err != nil {
+		panic(err)
+	}
+	var ci CacheItem
+	json.Unmarshal([]byte(ciJSON), &ci)
+	return ci
 }
 
 func GZip(data []byte) []byte {
@@ -516,23 +538,27 @@ func IsContentTypeSaveAllowed(contentType string) bool {
 	return false
 }
 
-func cacheFile(body []byte, dirName string, resp *http.Response) {
-	url := resp.Request.URL.String()
-	header := resp.Header
+func cacheFile(body []byte, resp *http.Response) {
 	uri := GetURI(resp.Request)
 	sha256 := GetSha256(uri)
 	expTime := getExpirationTime(resp.Header.Get("Cache-Control"))
 
-	safeCacheItem := safeCacheItemList[GetHashkey(uri)]
+	safeClient := safeClientList[GetHashkey(uri)]
 	go func() {
-		safeCacheItem.rwMutex.Lock()
+		safeClient.rwMutex.Lock()
 
-		os.MkdirAll(dirName, os.ModePerm)
-		os.WriteFile(dirName+"/"+sha256, body, 0644)
+		ci := CacheItem{
+			Header:         resp.Header,
+			Body:           body,
+			URL:            resp.Request.URL.String(),
+			ExpirationTime: expTime,
+			CachedTime:     time.Now(),
+		}
+		ciJSON, _ := json.Marshal(ci)
+		safeClient.client.Set(sha256, ciJSON, 0).Err()
 		cachedFileNum += 1
-		safeCacheItem.cacheItemMap[sha256] = cacheItem{header, url, dirName + "/" + sha256, expTime, time.Now()}
 
-		safeCacheItem.rwMutex.Unlock()
+		safeClient.rwMutex.Unlock()
 	}()
 }
 
@@ -556,28 +582,32 @@ func cleanupExpiredCaches() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		for _, safeCacheItem := range safeCacheItemList {
-			for sha256, cahceItem := range safeCacheItem.cacheItemMap {
-				if cahceItem.expirationTime.Before(time.Now()) {
-					removeCacheFile(safeCacheItem, sha256, cahceItem, "Expired")
+		for _, safeClient := range safeClientList {
+			safeClient.rwMutex.Lock()
+			client := safeClient.client
+			keys, err := client.Keys("*").Result()
+			if err != nil {
+				panic(err)
+			}
+
+			for _, sha256 := range keys {
+				cacheItem := getCacheItem(client, sha256)
+				if cacheItem.ExpirationTime.Before(time.Now()) {
+					removeCacheFile(client, sha256, cacheItem, "Expired")
 				}
 			}
+			safeClient.rwMutex.Unlock()
 		}
 		myLogger.logger.Printf("Cleanup Expired Items\n")
 	}
 }
 
-func removeCacheFile(sci *safeCacheItem, sha256 string, ci cacheItem, logMsg string) {
-	dir := ci.dir
-	sci.rwMutex.Lock()
-	defer sci.rwMutex.Unlock()
-	err := os.Remove(dir)
+func removeCacheFile(client *redis.Client, sha256 string, ci CacheItem, logMsg string) {
+	_, err := client.Del(sha256).Result() //_ : 지워진 값 개수
 	if err != nil {
-		myLogger.logger.Printf("파일 삭제 실패 : %e, 삭제하지 못한 파일 : %s\n", err, dir)
-		return
+		panic(err)
 	}
-	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, ci.url)
-	delete(sci.cacheItemMap, sha256)
+	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, ci.URL)
 }
 
 func logPerSec() {
@@ -592,17 +622,15 @@ func logPerSec() {
 func GetSha256(uri string) string {
 	newSha := sha256.New()
 	newSha.Write([]byte(uri))
-	shaSum := newSha.Sum(nil)
-	return hex.EncodeToString(shaSum)
+	return hex.EncodeToString(newSha.Sum(nil))
 }
 
 func GetHashkey(uri string) int {
 	newSha := sha256.New()
 	newSha.Write([]byte(uri))
-	shaSum := newSha.Sum(nil)
 
 	sha256Int := 0
-	for _, v := range shaSum {
+	for _, v := range newSha.Sum(nil) {
 		sha256Int += int(v)
 	}
 	return sha256Int % 255
@@ -612,7 +640,6 @@ func getIsGzipAccepted(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept-Encoding"), GZIP) && r.Host != IMAGE_HOST
 }
 
-// Generate Logger
 func openLoggerFile(fName string) *os.File {
 	logFile, err := os.OpenFile(fName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -621,7 +648,7 @@ func openLoggerFile(fName string) *os.File {
 	return logFile
 }
 
-func openLogger(f *os.File) *MyLogger {
+func generateLogger(f *os.File) *MyLogger {
 	logger := &MyLogger{log.New(f, "\n", log.Ldate|log.Ltime)}
 	return logger
 }
