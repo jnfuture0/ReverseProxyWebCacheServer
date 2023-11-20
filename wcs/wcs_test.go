@@ -2,12 +2,11 @@ package wcs_test
 
 import (
 	"fmt"
+	"jnlee/wcs"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
-
-	"jnlee/wcs"
 )
 
 func TestIsFileExist(t *testing.T) {
@@ -196,5 +195,47 @@ func GetURI(req *http.Request, config *wcs.Config) string {
 			}
 		}
 		return req.Method + host + myUrl.Path + "?" + strings.Join(result, "&")
+	}
+}
+
+var (
+	a int
+	b int
+	c int
+)
+
+type myStruct struct {
+	aa int
+	bb int
+	cc int
+}
+
+func BenchmarkGlobal(ttt *testing.B) {
+	a = 0
+	b = 0
+	c = 0
+
+	for i := 0; i < ttt.N; i++ {
+		// a += 1
+		// b += 1
+		// c += 1
+		if a > 500000 {
+			a -= 1
+		} else {
+			a += 1
+		}
+	}
+}
+
+func BenchmarkStruct(ttt *testing.B) {
+	m := myStruct{0, 0, 0}
+	for i := 0; i < ttt.N; i++ {
+		if m.aa > 500000 {
+			m.aa -= 1
+		} else {
+			m.aa += 1
+		}
+		// m.bb += 1
+		// m.cc += 1
 	}
 }

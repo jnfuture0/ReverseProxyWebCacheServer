@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,29 +33,32 @@ const (
 	CACHED      string = " (Cached)"
 	NOT_CACHED  string = " (Not cached)"
 	CONFIG_PATH string = "./wcs/config.json"
+	WCS_PATH    string = "./wcs/"
 )
 
 var (
-	safeClientList      []*safeClient
-	sendCacheNum        = 0
-	cachedFileNum       = 0
-	globalHitCount      = 0
-	globalRequestsCount = 0
-	imageHitCount       = 0
-	imageRequestsCount  = 0
-	config              = Config{}
-	myLogger            *MyLogger
+	rwMutextList []*sync.RWMutex
+	redisClient  *redis.Client //key = hashKey, field = sha256
+	config       = Config{}
+	myLogger     *MyLogger
+	countData    = countDatas{&sync.RWMutex{}, 0, 0, 0, 0, 0, 0}
 )
 
-type safeClient struct {
-	rwMutex *sync.RWMutex
-	client  *redis.Client
+type countDatas struct {
+	rwMutex    *sync.RWMutex
+	sendCache  int
+	cachedFile int
+	gHit       int
+	gRequest   int
+	iHit       int
+	iRequest   int
 }
 
 type CacheItem struct {
 	Header         http.Header
 	Body           []byte
 	URL            string
+	Host           string
 	ExpirationTime time.Time
 	CachedTime     time.Time
 }
@@ -80,6 +84,7 @@ type proxyHandler struct {
 type HTMLData struct {
 	HitData    []htmlHitData
 	ConfigData []htmlConfigData
+	CacheData  htmlCacheData
 }
 type htmlHitData struct {
 	Title    string
@@ -91,28 +96,37 @@ type htmlConfigData struct {
 	Name  string
 	Value string
 }
-
-func init() {
-	OpenServer()
+type htmlCacheData struct {
+	ImageData       []string
+	ImageDataCount  int
+	Images1         []string
+	Images2         []string
+	Images3         []string
+	GlobalData      []string
+	GlobalDataCount int
 }
+
+func init() {}
 
 func OpenServer() {
 	//For test
-	removeDirForTest()
+	initRedisClient()
 
 	loadConfig()
 
-	initClientList()
+	initMutexList()
 
-	logFile := openLoggerFile("./wcs/log_file.txt")
+	removeDirForTest()
+
+	logFile := openLoggerFile(WCS_PATH + "log_file.txt")
 	defer logFile.Close()
 	myLogger = generateLogger(logFile)
 
 	// Set ReverseProxy
 	proxyMap := map[string]*httputil.ReverseProxy{
-		GLOBAL_HOST: getReverseProxy("http://global.gmarket.co.kr/"),
-		IMAGE_HOST:  getReverseProxy("http://image.gmarket.co.kr/"),
-		CUSTOM_HOST: getReverseProxy("http://jn.wcs.co.kr/"),
+		GLOBAL_HOST: getReverseProxy(GLOBAL_HOST),
+		IMAGE_HOST:  getReverseProxy(IMAGE_HOST),
+		CUSTOM_HOST: getReverseProxy(CUSTOM_HOST),
 	}
 	pHandler := &proxyHandler{proxyMap}
 	http.Handle("/", pHandler)
@@ -133,9 +147,8 @@ func OpenServer() {
 
 // 디렉토리가 새로 만들어지는지 확인하기 위해, 프로그램 시작 시 기존 디렉토리 삭제
 func removeDirForTest() {
-	os.RemoveAll("./wcs/log_body")
-	os.RemoveAll("./wcs/log_image")
-	os.Remove("./wcs/log_file.txt")
+	os.Remove(WCS_PATH + "log_file.txt")
+	redisClient.FlushDB().Result()
 }
 
 func loadConfig() {
@@ -152,21 +165,21 @@ func loadConfig() {
 	config = *newConfig
 }
 
-func initClientList() {
+func initMutexList() {
 	for i := 0; i < 255; i++ {
-		port := strconv.Itoa(6379 + i)
-		redisClient := redis.NewClient(&redis.Options{
-			Addr:     "192.168.0.88:" + port,
-			Password: "",
-			DB:       i,
-		})
-		safeClient := &safeClient{&sync.RWMutex{}, redisClient}
-		safeClientList = append(safeClientList, safeClient)
+		rw := &sync.RWMutex{}
+		rwMutextList = append(rwMutextList, rw)
 	}
 }
 
-func getReverseProxy(uri string) *httputil.ReverseProxy {
-	url, err := url.Parse(uri)
+func initRedisClient() {
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+}
+
+func getReverseProxy(host string) *httputil.ReverseProxy {
+	url, err := url.Parse("http://" + host)
 	if err != nil {
 		panic(err)
 	}
@@ -196,21 +209,19 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	uri := GetURI(r)
 	sha256 := GetSha256(uri)
-	safeClient := safeClientList[GetHashkey(uri)]
-	safeClient.rwMutex.RLock()
-	exists, err := safeClient.client.Exists(sha256).Result()
-	if err == redis.Nil {
-		fmt.Println("Redis nil")
-	} else if err != nil {
-		fmt.Printf("err = %s\nhashKey = %d\nuri=%s\n", err, GetHashkey(uri), uri)
+	hashKey := GetHashkey(uri)
+
+	rwMutextList[hashKey].RLock()
+	exists, err := redisClient.HExists(strconv.Itoa(hashKey), sha256).Result()
+	if err != nil {
 		panic(err)
 	}
-	safeClient.rwMutex.RUnlock()
+	rwMutextList[hashKey].RUnlock()
 
 	startTime := time.Now()
 	var isCached string
-	if exists == 1 { //IsFileExist(safeClient.rwMutex, ci.Dir) &&
-		responseByCacheItem(safeClient, sha256, w, r)
+	if exists {
+		responseByCacheItem(hashKey, sha256, w, r)
 		isCached = CACHED
 	} else {
 		reverseProxy.ServeHTTP(w, r)
@@ -219,8 +230,7 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if config.ResTimeLoggingEnabled {
 		elapsedTime := time.Since(startTime)
-		url := "http://" + r.Host + r.URL.Path
-		myLogger.LogElapsedTime(url+isCached, elapsedTime)
+		myLogger.LogElapsedTime(r.Host+r.URL.Path+isCached, elapsedTime)
 	}
 }
 
@@ -234,10 +244,6 @@ func modifyResponse(resp *http.Response) error {
 	}
 
 	if !checkHeaderCacheSave(resp) {
-		return nil
-	}
-
-	if !checkMethodCacheSave(resp.Request.Method) {
 		return nil
 	}
 
@@ -263,21 +269,27 @@ func modifyResponse(resp *http.Response) error {
 }
 
 func increseRequestsCount(host string) {
+	countData.rwMutex.Lock()
+	countData.sendCache += 1
 	switch host {
 	case GLOBAL_HOST:
-		globalRequestsCount += 1
+		countData.gRequest += 1
 	case IMAGE_HOST:
-		imageRequestsCount += 1
+		countData.iRequest += 1
 	}
+	countData.rwMutex.Unlock()
 }
 
 func increseHitCount(host string) {
+	countData.rwMutex.Lock()
+	countData.sendCache += 1
 	switch host {
 	case GLOBAL_HOST:
-		globalHitCount += 1
+		countData.gHit += 1
 	case IMAGE_HOST:
-		imageHitCount += 1
+		countData.iHit += 1
 	}
+	countData.rwMutex.Unlock()
 }
 
 func showStatusPage(w http.ResponseWriter) {
@@ -289,32 +301,36 @@ func showStatusPage(w http.ResponseWriter) {
 		return math.Round(perFloat*100) / 100
 	}
 
-	globalPercent := getPercent(globalHitCount, globalRequestsCount)
-	imagePercent := getPercent(imageHitCount, imageRequestsCount)
-	totalPercent := getPercent(globalHitCount+imageHitCount, globalRequestsCount+imageRequestsCount)
+	countData.rwMutex.RLock()
+	gPercent := getPercent(countData.gHit, countData.gRequest)
+	iPercent := getPercent(countData.iHit, countData.iRequest)
+	tPercent := getPercent(countData.gHit+countData.iHit, countData.gRequest+countData.iRequest)
 
 	htmlDataList := []htmlHitData{
-		{"Global", globalHitCount, globalRequestsCount, globalPercent},
-		{"Image", imageHitCount, imageRequestsCount, imagePercent},
-		{"Total", globalHitCount + imageHitCount, globalRequestsCount + imageRequestsCount, totalPercent},
+		{"Global", countData.gHit, countData.gRequest, gPercent},
+		{"Image", countData.iHit, countData.iRequest, iPercent},
+		{"Total", countData.gHit + countData.iHit, countData.gRequest + countData.iRequest, tPercent},
 	}
+	countData.rwMutex.RUnlock()
 
 	configDataList := []htmlConfigData{}
 	configData := htmlConfigData{}
-	configDataMap := getConfigDatas()
-	for key, value := range configDataMap {
+	for key, value := range getConfigDatas() {
 		val := fmt.Sprintf("%v", value)
 		configData.Name = key
 		configData.Value = val
 		configDataList = append(configDataList, configData)
 	}
+	sort.Slice(configDataList, func(i, j int) bool {
+		return configDataList[i].Name < configDataList[j].Name
+	})
 
-	tmpl, err := template.ParseFiles("./wcs/status-page.html")
+	tmpl, err := template.ParseFiles(WCS_PATH + "status-page.html")
 	if err != nil {
 		panic(err)
 	}
 
-	htmlData := HTMLData{htmlDataList, configDataList}
+	htmlData := HTMLData{htmlDataList, configDataList, getCachedData()}
 	err = tmpl.Execute(w, htmlData)
 	if err != nil {
 		panic(err)
@@ -345,29 +361,58 @@ func handlePurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, safeClient := range safeClientList {
-		safeClient.rwMutex.Lock()
-		client := safeClient.client
-		keys, err := client.Keys("*").Result()
+	for hashKey, rwMutex := range rwMutextList {
+		rwMutex.Lock()
+		result, err := redisClient.HGetAll(strconv.Itoa(hashKey)).Result()
 		if err != nil {
 			panic(err)
 		}
 
-		for _, sha256 := range keys {
-			cacheItem := getCacheItem(client, sha256)
+		for sha256, _ := range result {
+			cacheItem := getCacheItem(hashKey, sha256)
 			if compiledPattern.MatchString(cacheItem.URL) {
-				removeCacheFile(client, sha256, cacheItem, "Purge")
+				removeCacheFile(hashKey, sha256, cacheItem.URL, "Purge")
 			}
 		}
-		safeClient.rwMutex.Unlock()
+		rwMutex.Unlock()
 	}
 }
 
-func responseByCacheItem(safeClient *safeClient, sha256 string, w http.ResponseWriter, r *http.Request) {
-	rwMutex := safeClient.rwMutex
-	rwMutex.RLock()
-	cacheItem := getCacheItem(safeClient.client, sha256)
-	rwMutex.RUnlock()
+func getCachedData() (cachedData htmlCacheData) {
+	for hashKey, rwMutex := range rwMutextList {
+		rwMutex.Lock()
+		result, err := redisClient.HGetAll(strconv.Itoa(hashKey)).Result()
+		if err != nil {
+			panic(err)
+		}
+
+		for sha256, _ := range result {
+			cacheItem := getCacheItem(hashKey, sha256)
+
+			switch cacheItem.Host {
+			case IMAGE_HOST:
+				cachedData.ImageData = append(cachedData.ImageData, cacheItem.URL)
+				cachedData.ImageDataCount += 1
+			default:
+				cachedData.GlobalData = append(cachedData.GlobalData, cacheItem.URL)
+				cachedData.GlobalDataCount += 1
+			}
+		}
+		rwMutex.Unlock()
+	}
+	length := len(cachedData.ImageData)
+	length /= 3
+	cachedData.Images1 = cachedData.ImageData[:length]
+	cachedData.Images2 = cachedData.ImageData[length : length*2]
+	cachedData.Images3 = cachedData.ImageData[length*2:]
+
+	return cachedData
+}
+
+func responseByCacheItem(hashKey int, sha256 string, w http.ResponseWriter, r *http.Request) {
+	rwMutextList[hashKey].RLock()
+	cacheItem := getCacheItem(hashKey, sha256)
+	rwMutextList[hashKey].RUnlock()
 	fileBody := cacheItem.Body
 
 	if config.GzipEnabled && getIsGzipAccepted(r) {
@@ -385,14 +430,11 @@ func responseByCacheItem(safeClient *safeClient, sha256 string, w http.ResponseW
 	w.Header().Add("jnlee", "HIT")
 	w.Write(fileBody)
 
-	rwMutex.Lock()
-	sendCacheNum += 1
 	increseHitCount(r.Host)
-	rwMutex.Unlock()
 }
 
-func getCacheItem(client *redis.Client, sha256 string) CacheItem {
-	ciJSON, err := client.Get(sha256).Result()
+func getCacheItem(hashKey int, sha256 string) CacheItem {
+	ciJSON, err := redisClient.HGet(strconv.Itoa(hashKey), sha256).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -482,13 +524,18 @@ func isCacheException(url string) bool {
 	return false
 }
 
-// StatueCode, Cache-Control, Content-Type 확인
+// StatueCode, Method, Cache-Control, Content-Type 확인
 func checkHeaderCacheSave(resp *http.Response) bool {
 	url := resp.Request.URL
 
 	//Check Status Code
 	if resp.StatusCode != http.StatusOK {
 		myLogger.logger.Printf("CheckHeader : Status not ok. StatusCode = %d, %s\n", resp.StatusCode, url)
+		return false
+	}
+
+	//Checkc Method
+	if resp.Request.Method != http.MethodGet && resp.Request.Method != http.MethodHead {
 		return false
 	}
 
@@ -507,15 +554,6 @@ func checkHeaderCacheSave(resp *http.Response) bool {
 	}
 
 	return true
-}
-
-func checkMethodCacheSave(method string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead:
-		return true
-	default:
-		return false
-	}
 }
 
 func IsCacheControlSaveAllowed(cacheControl string) bool {
@@ -541,24 +579,29 @@ func IsContentTypeSaveAllowed(contentType string) bool {
 func cacheFile(body []byte, resp *http.Response) {
 	uri := GetURI(resp.Request)
 	sha256 := GetSha256(uri)
-	expTime := getExpirationTime(resp.Header.Get("Cache-Control"))
+	hashKey := GetHashkey(uri)
 
-	safeClient := safeClientList[GetHashkey(uri)]
 	go func() {
-		safeClient.rwMutex.Lock()
-
 		ci := CacheItem{
 			Header:         resp.Header,
 			Body:           body,
 			URL:            resp.Request.URL.String(),
-			ExpirationTime: expTime,
+			Host:           resp.Request.Host,
+			ExpirationTime: getExpirationTime(resp.Header.Get("Cache-Control")),
 			CachedTime:     time.Now(),
 		}
 		ciJSON, _ := json.Marshal(ci)
-		safeClient.client.Set(sha256, ciJSON, 0).Err()
-		cachedFileNum += 1
 
-		safeClient.rwMutex.Unlock()
+		rwMutextList[hashKey].Lock()
+		err := redisClient.HSet(strconv.Itoa(hashKey), sha256, ciJSON).Err()
+		if err != nil {
+			panic(err)
+		}
+		rwMutextList[hashKey].Unlock()
+
+		countData.rwMutex.Lock()
+		countData.cachedFile += 1
+		countData.rwMutex.Unlock()
 	}()
 }
 
@@ -566,8 +609,7 @@ func getExpirationTime(cacheControl string) time.Time {
 	var exTime time.Time
 
 	if cacheControl != "" {
-		re := regexp.MustCompile(`max-age=(\d+)`)
-		matches := re.FindStringSubmatch(cacheControl)
+		matches := regexp.MustCompile(`max-age=(\d+)`).FindStringSubmatch(cacheControl)
 		if len(matches) > 1 {
 			maxAgeInt, _ := strconv.Atoi(matches[1])
 			cTime := time.Now()
@@ -582,32 +624,31 @@ func cleanupExpiredCaches() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		for _, safeClient := range safeClientList {
-			safeClient.rwMutex.Lock()
-			client := safeClient.client
-			keys, err := client.Keys("*").Result()
+		for hashKey, rwMutex := range rwMutextList {
+			rwMutex.Lock()
+			result, err := redisClient.HGetAll(strconv.Itoa(hashKey)).Result()
 			if err != nil {
 				panic(err)
 			}
 
-			for _, sha256 := range keys {
-				cacheItem := getCacheItem(client, sha256)
+			for sha256, _ := range result {
+				cacheItem := getCacheItem(hashKey, sha256)
 				if cacheItem.ExpirationTime.Before(time.Now()) {
-					removeCacheFile(client, sha256, cacheItem, "Expired")
+					removeCacheFile(hashKey, sha256, cacheItem.URL, "Expired")
 				}
 			}
-			safeClient.rwMutex.Unlock()
+			rwMutex.Unlock()
 		}
 		myLogger.logger.Printf("Cleanup Expired Items\n")
 	}
 }
 
-func removeCacheFile(client *redis.Client, sha256 string, ci CacheItem, logMsg string) {
-	_, err := client.Del(sha256).Result() //_ : 지워진 값 개수
+func removeCacheFile(hashKey int, sha256 string, url string, logMsg string) {
+	_, err := redisClient.HDel(strconv.Itoa(hashKey), sha256).Result() //_ : 지워진 값 개수
 	if err != nil {
 		panic(err)
 	}
-	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, ci.URL)
+	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, url)
 }
 
 func logPerSec() {
@@ -615,7 +656,7 @@ func logPerSec() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		myLogger.LogCacheNum(cachedFileNum, sendCacheNum)
+		myLogger.LogCacheNum()
 	}
 }
 
@@ -659,11 +700,13 @@ func (mLogger *MyLogger) LogElapsedTime(url string, elapsedTime time.Duration) {
 	mLogger.logger.Println(sb.String())
 }
 
-func (mLogger *MyLogger) LogCacheNum(mCachedFileNum int, mSendCacheNum int) {
+func (mLogger *MyLogger) LogCacheNum() {
+	countData.rwMutex.Lock()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Cached File Number = %d, Send cache file number = %d", mCachedFileNum, mSendCacheNum)
+	fmt.Fprintf(&sb, "Cached File Number = %d, Send cache file number = %d", countData.cachedFile, countData.sendCache)
 	mLogger.logger.Println(sb.String())
 
-	cachedFileNum = 0
-	sendCacheNum = 0
+	countData.cachedFile = 0
+	countData.sendCache = 0
+	countData.rwMutex.Unlock()
 }
