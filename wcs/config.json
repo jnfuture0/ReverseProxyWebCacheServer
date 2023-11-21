@@ -8,5 +8,6 @@
     "QueryIgnoreEnabled": false,
     "QuerySortingEnabled": true,
     "ResponseTimeLoggingEnabled": true,
-    "CleanupFrequency": 60
+    "CleanupFrequency": 60,
+    "StoreType": "file"
 }

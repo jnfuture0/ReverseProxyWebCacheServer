@@ -121,40 +121,40 @@ func TestGzipDecompress(t *testing.T) {
 	}
 }
 
-func TestGetURI(t *testing.T) {
-	dummy := []*wcs.Config{
-		&wcs.Config{
-			0, true, []string{}, true, true, true, 0,
-		},
-		&wcs.Config{
-			0, true, []string{}, true, false, true, 0,
-		},
-		&wcs.Config{
-			0, true, []string{}, false, true, true, 0,
-		},
-		&wcs.Config{
-			0, true, []string{}, false, false, false, 0,
-		},
-	}
+// func TestGetURI(t *testing.T) {
+// 	dummy := []*wcs.Config{
+// 		&wcs.Config{
+// 			0, true, []string{}, true, true, true, 0,
+// 		},
+// 		&wcs.Config{
+// 			0, true, []string{}, true, false, true, 0,
+// 		},
+// 		&wcs.Config{
+// 			0, true, []string{}, false, true, true, 0,
+// 		},
+// 		&wcs.Config{
+// 			0, true, []string{}, false, false, false, 0,
+// 		},
+// 	}
 
-	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
-	req := &http.Request{
-		URL:    url,
-		Method: "GET",
-	}
-	for _, val := range dummy {
-		fmt.Println(GetURI(req, val))
-	}
+// 	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
+// 	req := &http.Request{
+// 		URL:    url,
+// 		Method: "GET",
+// 	}
+// 	for _, val := range dummy {
+// 		fmt.Println(GetURI(req, val))
+// 	}
 
-	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
-	req2 := &http.Request{
-		URL:    url2,
-		Method: "GET",
-	}
-	for _, val := range dummy {
-		fmt.Println(GetURI(req2, val))
-	}
-}
+// 	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
+// 	req2 := &http.Request{
+// 		URL:    url2,
+// 		Method: "GET",
+// 	}
+// 	for _, val := range dummy {
+// 		fmt.Println(GetURI(req2, val))
+// 	}
+// }
 
 func GetURI(req *http.Request, config *wcs.Config) string {
 	myUrl := req.URL

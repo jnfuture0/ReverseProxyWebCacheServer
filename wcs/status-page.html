@@ -87,7 +87,7 @@
         <tr>
             <th>-</th>
             <th>Hit Count</th>
-            <th>Requests</th>
+            <th>All Requests</th>
             <th>Hit Percentage</th>
         </tr>
         {{range .HitData}}
@@ -100,22 +100,51 @@
         {{end}}
     </table>
 
-    <!-- <div id="donutchart" style="width: 900px; height: 500px;"></div> -->
+    <div class="row">
+        <div class="left">
+            <p>About Config</p>
 
-    <p>About Config</p>
+            <table border="1">
+                <tr>
+                    <th>Config</th>
+                    <th>Value</th>
+                </tr>
+                {{range .ConfigData}}
+                <tr>
+                    <td style="text-align: start;">{{.Name}}</td>
+                    <td>{{.Value}}</td>
+                </tr>
+                {{end}}
+            </table>
+        </div>
 
-    <table border="1">
-        <tr>
-            <th>Config</th>
-            <th>Value</th>
-        </tr>
-        {{range .ConfigData}}
-        <tr>
-            <td style="text-align: start;">{{.Name}}</td>
-            <td>{{.Value}}</td>
-        </tr>
-        {{end}}
-    </table>
+        <div class="right">
+            <p>Reasons of Not Cached</p>
+            <table border="1">
+                <tr>
+                    <th>-</th>
+                    <th>FileSize</th>
+                    <th>CacheException</th>
+                    <th>Status</th>
+                    <th>Method</th>
+                    <th>Cache-Control</th>
+                    <th>Content-Type</th>
+                    <th>Total</th>
+                </tr>
+                <tr>
+                    <th>Count</th>
+                    <td>{{.ReasonsNotCached.FileSizeError}}</td>
+                    <td>{{.ReasonsNotCached.CacheException}}</td>
+                    <td>{{.ReasonsNotCached.StatusError}}</td>
+                    <td>{{.ReasonsNotCached.MethodError}}</td>
+                    <td>{{.ReasonsNotCached.CacheControlError}}</td>
+                    <td>{{.ReasonsNotCached.ContentTypeError}}</td>
+                    <td>{{.ReasonsNotCached.Total}}</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
 
     <div class="row">
         <div class="left">
