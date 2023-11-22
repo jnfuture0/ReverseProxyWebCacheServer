@@ -3,11 +3,38 @@ package wcs_test
 import (
 	"fmt"
 	"jnlee/wcs"
+	"jnlee/workerpool"
+	"math/rand"
 	"net/http"
 	"net/url"
-	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+var (
+	MockedConfig = ConfigMock{
+		c: wcs.ConfigStruct{
+			100000, true, []string{}, false, true, true, 60, "file",
+		},
+	}
+	// dummyFileData []byte
+)
+
+type ConfigMock struct {
+	c wcs.ConfigStruct
+}
+
+func init() {
+	wcs.Config = MockedConfig.c
+
+	// str := "abcdefghij"
+	// strR := strings.Repeat(str, 200)
+	// dummyFileData = []byte(strR)
+
+	wcs.InitWorkerpool()
+	wcs.InitMutexAndRedis()
+}
 
 func TestIsFileExist(t *testing.T) {
 	// dummy := map[string]bool{
@@ -121,121 +148,140 @@ func TestGzipDecompress(t *testing.T) {
 	}
 }
 
-// func TestGetURI(t *testing.T) {
-// 	dummy := []*wcs.Config{
-// 		&wcs.Config{
-// 			0, true, []string{}, true, true, true, 0,
-// 		},
-// 		&wcs.Config{
-// 			0, true, []string{}, true, false, true, 0,
-// 		},
-// 		&wcs.Config{
-// 			0, true, []string{}, false, true, true, 0,
-// 		},
-// 		&wcs.Config{
-// 			0, true, []string{}, false, false, false, 0,
-// 		},
-// 	}
+func TestGetURI(t *testing.T) {
+	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
+	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
 
-// 	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
-// 	req := &http.Request{
-// 		URL:    url,
-// 		Method: "GET",
-// 	}
-// 	for _, val := range dummy {
-// 		fmt.Println(GetURI(req, val))
-// 	}
+	dummy := map[*http.Request]string{
+		&http.Request{
+			URL:    url,
+			Method: http.MethodGet,
+		}: "GETglobal.gmarket.co.kr?a=1&aaa=4&ba=5&bb=2&c=3",
+		&http.Request{
+			URL:    url2,
+			Method: http.MethodGet,
+		}: "GETglobal.gmarket.co.kr?a=1&c=2&e=0",
+	}
 
-// 	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
-// 	req2 := &http.Request{
-// 		URL:    url2,
-// 		Method: "GET",
-// 	}
-// 	for _, val := range dummy {
-// 		fmt.Println(GetURI(req2, val))
+	for key, val := range dummy {
+		hk := wcs.GetURI(key)
+		if hk != val {
+			t.Error("WrongResult")
+		}
+	}
+}
+
+// var (
+// 	a int
+// 	b int
+// 	c int
+// )
+
+// type myStruct struct {
+// 	aa int
+// 	bb int
+// 	cc int
+// }
+
+// func BenchmarkGlobal(ttt *testing.B) {
+// 	a = 0
+// 	b = 0
+// 	c = 0
+
+// 	for i := 0; i < ttt.N; i++ {
+// 		// a += 1
+// 		// b += 1
+// 		// c += 1
+// 		if a > 500000 {
+// 			a -= 1
+// 		} else {
+// 			a += 1
+// 		}
 // 	}
 // }
 
-func GetURI(req *http.Request, config *wcs.Config) string {
-	myUrl := req.URL
-	host := func() string {
-		if len(myUrl.Host) == 0 {
-			return req.Host
-		} else {
-			return myUrl.Host
-		}
-	}()
+// func BenchmarkStruct(ttt *testing.B) {
+// 	m := myStruct{0, 0, 0}
+// 	for i := 0; i < ttt.N; i++ {
+// 		if m.aa > 500000 {
+// 			m.aa -= 1
+// 		} else {
+// 			m.aa += 1
+// 		}
+// 		// m.bb += 1
+// 		// m.cc += 1
+// 	}
+// }
 
-	switch {
-	case len(myUrl.Query()) == 0 || config.QueryIgnoreEnabled:
-		return req.Method + host + myUrl.Path
-	case config.QuerySortingEnabled:
-		var keys []string
-		for key := range myUrl.Query() {
-			keys = append(keys, key)
-		}
-		sortedQuery := url.Values{}
-		for _, key := range keys {
-			qs := myUrl.Query()[key]
-			for _, value := range qs {
-				if len(value) != 0 {
-					sortedQuery.Add(key, value)
-				}
-			}
+// func TestCacheFile(t *testing.T) {
+// 	originalSha256 := sha256
+// }
 
-		}
-		return req.Method + host + myUrl.Path + "?" + sortedQuery.Encode()
-	default:
-		queries := strings.Split(myUrl.RawQuery, "&")
-		var result []string
-		for _, query := range queries {
-			parts := strings.Split(query, "=")
-			if len(parts) == 2 && parts[1] != "" {
-				result = append(result, fmt.Sprintf("%s=%s", parts[0], parts[1]))
-			}
-		}
-		return req.Method + host + myUrl.Path + "?" + strings.Join(result, "&")
+func BenchmarkGoroutine(b *testing.B) {
+	b.ReportAllocs()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < b.N; i++ {
+
+		wg.Add(1)
+		go func() {
+
+			// url, _ := url.Parse("http://global.gmarket.co.kr")
+			// resp := &http.Response{
+			// 	Request: &http.Request{
+			// 		URL: url,
+			// 	},
+			// }
+			// wcs.CacheFile(dummyFileData, resp)
+			time.Sleep(time.Microsecond)
+			// generateRandomString(1)
+			wg.Done()
+		}()
 	}
+
+	wg.Wait()
 }
 
-var (
-	a int
-	b int
-	c int
-)
+func BenchmarkWorkerpool(b *testing.B) {
+	b.ReportAllocs()
 
-type myStruct struct {
-	aa int
-	bb int
-	cc int
-}
+	wp := workerpool.NewWorkerPool(255)
+	wp.Run()
 
-func BenchmarkGlobal(ttt *testing.B) {
-	a = 0
-	b = 0
-	c = 0
+	var wg sync.WaitGroup
 
-	for i := 0; i < ttt.N; i++ {
-		// a += 1
-		// b += 1
-		// c += 1
-		if a > 500000 {
-			a -= 1
-		} else {
-			a += 1
-		}
+	for i := 0; i < b.N; i++ {
+		// url, _ := url.Parse("http://global.gmarket.co.kr")
+		// resp := &http.Response{
+		// 	Request: &http.Request{
+		// 		URL: url,
+		// 	},
+		// }
+		wg.Add(1)
+		wp.AddTask(func() {
+			// wcs.CacheFile(dummyFileData, resp)
+			time.Sleep(time.Microsecond)
+			// generateRandomString(1)
+			wg.Done()
+		})
 	}
+	wg.Wait()
 }
+func generateRandomString(length int) string {
+	// 무작위 시드 초기화
+	rand.Seed(time.Now().UnixNano())
 
-func BenchmarkStruct(ttt *testing.B) {
-	m := myStruct{0, 0, 0}
-	for i := 0; i < ttt.N; i++ {
-		if m.aa > 500000 {
-			m.aa -= 1
-		} else {
-			m.aa += 1
-		}
-		// m.bb += 1
-		// m.cc += 1
+	// 사용할 문자열의 문자들
+	charSet := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+	// 문자열을 담을 변수 초기화
+	result := make([]byte, length)
+
+	// 문자열 생성
+	for i := 0; i < length; i++ {
+		result[i] = charSet[rand.Intn(len(charSet))]
 	}
+
+	return string(result)
 }

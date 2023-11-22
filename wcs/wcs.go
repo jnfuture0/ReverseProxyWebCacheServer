@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"jnlee/workerpool"
 	"log"
 	"math"
 	"net/http"
@@ -44,9 +45,10 @@ var (
 	rwMutextList      []*sync.RWMutex
 	redisClient       *redis.Client //key = hashKey, field = sha256
 	safeCacheItemList []*safeCacheItem
-	config            = Config{}
+	Config            = ConfigStruct{}
 	myLogger          *MyLogger
 	countData         = countDatas{&sync.RWMutex{}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	Workerpool        workerpool.WorkerPool
 )
 
 type safeCacheItem struct {
@@ -83,7 +85,7 @@ type MyLogger struct {
 	logger *log.Logger
 }
 
-type Config struct {
+type ConfigStruct struct {
 	MaxFileSize           int64    `json:"MaxFileSize"`
 	GzipEnabled           bool     `json:"GzipEnabled"`
 	CacheExceptions       []string `json:"CacheExceptions"`
@@ -136,10 +138,12 @@ type htmlReasonsNotCached struct {
 func init() {}
 
 func OpenServer() {
-	initMutexAndRedis()
+	InitMutexAndRedis()
 	defer redisClient.Close()
 
 	loadConfig()
+
+	InitWorkerpool()
 
 	//For test
 	removeDirForTest()
@@ -186,15 +190,15 @@ func loadConfig() {
 		panic(err)
 	}
 
-	newConfig := &Config{}
+	newConfig := &ConfigStruct{}
 	err = json.Unmarshal(configData, newConfig)
 	if err != nil {
 		panic(err)
 	}
-	config = *newConfig
+	Config = *newConfig
 }
 
-func initMutexAndRedis() {
+func InitMutexAndRedis() {
 	for i := 0; i < 255; i++ {
 		rw := &sync.RWMutex{}
 		rwMutextList = append(rwMutextList, rw)
@@ -207,6 +211,11 @@ func initMutexAndRedis() {
 		Password: "",
 		DB:       0,
 	})
+}
+
+func InitWorkerpool() {
+	Workerpool = workerpool.NewWorkerPool(255)
+	Workerpool.Run()
 }
 
 func getReverseProxy(host string) *httputil.ReverseProxy {
@@ -252,7 +261,7 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		isCached = NOT_CACHED
 	}
 
-	if config.ResTimeLoggingEnabled {
+	if Config.ResTimeLoggingEnabled {
 		elapsedTime := time.Since(startTime)
 		myLogger.LogElapsedTime(r.Host+r.URL.Path+isCached, elapsedTime)
 	}
@@ -282,13 +291,13 @@ func modifyResponse(resp *http.Response) error {
 	defer resp.Body.Close()
 
 	// Check File Size
-	if len(body) > int(config.MaxFileSize) {
+	if len(body) > int(Config.MaxFileSize) {
 		myLogger.logger.Printf("File size over. Do not cache : %s (%d bytes)\n", url.String(), len(body))
 		increaseCountData(&countData.filesizeError)
 		return nil
 	}
 
-	go cacheFile(body, resp)
+	Workerpool.AddTask(func() { CacheFile(body, resp) })
 
 	return nil
 }
@@ -438,7 +447,7 @@ func responseByCacheItem(hashKey int, sha256 string, w http.ResponseWriter, r *h
 	rwMutextList[hashKey].RUnlock()
 	fileBody := cacheItem.Body
 
-	if config.GzipEnabled && getIsGzipAccepted(r) {
+	if Config.GzipEnabled && getIsGzipAccepted(r) {
 		fileBody = GZip(fileBody)
 		w.Header().Set("Content-Encoding", GZIP)
 	}
@@ -459,7 +468,7 @@ func responseByCacheItem(hashKey int, sha256 string, w http.ResponseWriter, r *h
 func getCacheItem(hashKey int, sha256 string) CacheItem {
 	var ci CacheItem
 
-	switch config.StoreType {
+	switch Config.StoreType {
 	case STORE_TYPE_REDIS:
 		ciJSON, err := redisClient.HGet(strconv.Itoa(hashKey), sha256).Result()
 		if err != nil {
@@ -506,9 +515,9 @@ func GetURI(req *http.Request) string {
 	}()
 
 	switch {
-	case len(myUrl.Query()) == 0 || config.QueryIgnoreEnabled:
+	case len(myUrl.Query()) == 0 || Config.QueryIgnoreEnabled:
 		return req.Method + host + myUrl.Path
-	case config.QuerySortingEnabled:
+	case Config.QuerySortingEnabled:
 		var keys []string
 		for key := range myUrl.Query() {
 			keys = append(keys, key)
@@ -537,8 +546,8 @@ func GetURI(req *http.Request) string {
 }
 
 func isCacheException(url string) bool {
-	regexps := make([]*regexp.Regexp, len(config.CacheExceptions))
-	for i, pattern := range config.CacheExceptions {
+	regexps := make([]*regexp.Regexp, len(Config.CacheExceptions))
+	for i, pattern := range Config.CacheExceptions {
 		compiledPattern, err := regexp.Compile(pattern)
 		if err != nil {
 			myLogger.logger.Printf("정규 표현식 컴파일 오류: %s (%v)\n", pattern, err)
@@ -559,7 +568,7 @@ func isCacheExist(hashKey int, sha256 string) bool {
 	rwMutextList[hashKey].RLock()
 	defer rwMutextList[hashKey].RUnlock()
 
-	switch config.StoreType {
+	switch Config.StoreType {
 	case STORE_TYPE_REDIS:
 		exists, err := redisClient.HExists(strconv.Itoa(hashKey), sha256).Result()
 		if err != nil {
@@ -633,7 +642,7 @@ func IsContentTypeSaveAllowed(contentType string) bool {
 	return false
 }
 
-func cacheFile(body []byte, resp *http.Response) {
+func CacheFile(body []byte, resp *http.Response) {
 	uri := GetURI(resp.Request)
 	sha256 := GetSha256(uri)
 	hashKey := GetHashkey(uri)
@@ -655,7 +664,7 @@ func cacheFile(body []byte, resp *http.Response) {
 	}
 
 	rwMutextList[hashKey].Lock()
-	switch config.StoreType {
+	switch Config.StoreType {
 	case STORE_TYPE_REDIS:
 		ciJSON, _ := json.Marshal(ci)
 		err := redisClient.HSet(strconv.Itoa(hashKey), sha256, ciJSON).Err()
@@ -691,7 +700,7 @@ func getExpirationTime(cacheControl string) time.Time {
 }
 
 func cleanupExpiredCaches() {
-	ticker := time.NewTicker(time.Second * time.Duration(config.CleanupFrequency))
+	ticker := time.NewTicker(time.Second * time.Duration(Config.CleanupFrequency))
 	defer ticker.Stop()
 
 	removeExpired := func(hashKey int, sha256 string, ci CacheItem) {
@@ -707,7 +716,7 @@ func cleanupExpiredCaches() {
 }
 
 func removeCacheFile(hashKey int, sha256 string, url string, logMsg string) {
-	switch config.StoreType {
+	switch Config.StoreType {
 	case STORE_TYPE_REDIS:
 		_, err := redisClient.HDel(strconv.Itoa(hashKey), sha256).Result() //_ : 지워진 값 개수
 		if err != nil {
@@ -845,7 +854,7 @@ func doForEachCachedData(lock string, do func(hashKey int, sha256 string, ci Cac
 		}
 	}
 
-	switch config.StoreType {
+	switch Config.StoreType {
 	case STORE_TYPE_REDIS:
 		doRedis(LOCK, do)
 	case STORE_TYPE_FILE:

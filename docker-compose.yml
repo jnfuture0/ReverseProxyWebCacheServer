@@ -1,7 +1,13 @@
 version: '3.9'
 services:
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+    container_name: redis_container
+
   reverse-proxy:
-    image: wcs
+    image: wcs_file
     ports:
       - "80:80"
     container_name: wcs_container
@@ -10,3 +16,5 @@ services:
     environment:
       - KEY1=value1
       - KEY2=value2
+    depends_on:
+      - redis

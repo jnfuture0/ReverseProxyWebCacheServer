@@ -4,7 +4,8 @@ ENV GOOS=linux \
 WORKDIR /build
 
 COPY wcs/ ./wcs/
-COPY jnlee.go go.mod ./
+COPY workerpool/ ./workerpool/
+COPY jnlee.go go.mod go.sum ./
 
 RUN go mod download
 RUN go build -o jnlee .
