@@ -117,6 +117,7 @@ type htmlConfigData struct {
 	Value string
 }
 type htmlCacheData struct {
+	ShowImage       bool
 	ImageData       []string
 	ImageDataCount  int
 	Images1         []string
@@ -235,8 +236,13 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Host == CUSTOM_HOST && r.URL.Path == "/statuspage" {
-		showStatusPage(w)
+	if r.Host == CUSTOM_HOST {
+		switch r.URL.Path {
+		case "/statuspage":
+			showStatusPage(w, false)
+		case "/statuspage-with-image":
+			showStatusPage(w, true)
+		}
 		return
 	}
 
@@ -269,15 +275,8 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func modifyResponse(resp *http.Response) error {
 	url := resp.Request.URL
-	uri := GetURI(resp.Request)
 
-	if isCacheException(uri) {
-		increaseCountData(&countData.cacheException)
-		myLogger.logger.Printf("Cache Exception : %s\n", uri)
-		return nil
-	}
-
-	if !checkHeaderCacheSave(resp) {
+	if !isCacheable(resp) {
 		return nil
 	}
 
@@ -320,7 +319,7 @@ func increaseHitCount(host string) {
 	}
 }
 
-func showStatusPage(w http.ResponseWriter) {
+func showStatusPage(w http.ResponseWriter, showImage bool) {
 	getPercent := func(hit int, req int) float64 {
 		if hit == 0 {
 			return 0
@@ -368,7 +367,7 @@ func showStatusPage(w http.ResponseWriter) {
 		panic(err)
 	}
 
-	htmlData := HTMLData{htmlDataList, configDataList, getCachedData(), rnc}
+	htmlData := HTMLData{htmlDataList, configDataList, getCachedData(showImage), rnc}
 	err = tmpl.Execute(w, htmlData)
 	if err != nil {
 		panic(err)
@@ -412,7 +411,9 @@ func handlePurge(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Purge Success! (%d items)\n", matchCount)
 }
 
-func getCachedData() (cachedData htmlCacheData) {
+func getCachedData(showImage bool) (cachedData htmlCacheData) {
+	cachedData.ShowImage = showImage
+
 	appendEachData := func(hashKey int, sha256 string, ci CacheItem) {
 		switch ci.Host {
 		case IMAGE_HOST:
@@ -545,7 +546,7 @@ func GetURI(req *http.Request) string {
 	}
 }
 
-func isCacheException(url string) bool {
+func IsCacheException(url string) bool {
 	regexps := make([]*regexp.Regexp, len(Config.CacheExceptions))
 	for i, pattern := range Config.CacheExceptions {
 		compiledPattern, err := regexp.Compile(pattern)
@@ -587,12 +588,19 @@ func isCacheExist(hashKey int, sha256 string) bool {
 }
 
 // StatueCode, Method, Cache-Control, Content-Type 확인
-func checkHeaderCacheSave(resp *http.Response) bool {
+func isCacheable(resp *http.Response) bool {
 	url := resp.Request.URL
+	uri := GetURI(resp.Request)
+
+	if IsCacheException(uri) {
+		increaseCountData(&countData.cacheException)
+		myLogger.logger.Printf("CheckCacheable : CacheException. uri = %s\n", uri)
+		return false
+	}
 
 	//Check Status Code
 	if resp.StatusCode != http.StatusOK {
-		myLogger.logger.Printf("CheckHeader : Status not ok. StatusCode = %d, %s\n", resp.StatusCode, url)
+		myLogger.logger.Printf("CheckCacheable : Status not ok. StatusCode = %d, %s\n", resp.StatusCode, url)
 		increaseCountData(&countData.statusError)
 		return false
 	}
@@ -600,13 +608,14 @@ func checkHeaderCacheSave(resp *http.Response) bool {
 	//Check Method
 	if resp.Request.Method != http.MethodGet && resp.Request.Method != http.MethodHead {
 		increaseCountData(&countData.methodError)
+		myLogger.logger.Printf("CheckCacheable : Method not ok. method = %s\n", resp.Request.Method)
 		return false
 	}
 
 	//Check Cache Control
 	cacheControl := resp.Header.Get("Cache-Control")
 	if !IsCacheControlSaveAllowed(cacheControl) {
-		myLogger.logger.Printf("CheckHeader : Cache-Control Not Allowed (%s) : %s\n", cacheControl, url)
+		myLogger.logger.Printf("CheckCacheable : Cache-Control Not Allowed (%s) : %s\n", cacheControl, url)
 		increaseCountData(&countData.cacheControlError)
 		return false
 	}
@@ -614,7 +623,7 @@ func checkHeaderCacheSave(resp *http.Response) bool {
 	//Check Content Type
 	contentType := resp.Header.Get("Content-Type")
 	if !IsContentTypeSaveAllowed(contentType) {
-		myLogger.logger.Printf("CheckHeader : Cache save not allowd by Content-Type (%s) : %s\n", contentType, url)
+		myLogger.logger.Printf("CheckCacheable : Cache save not allowd by Content-Type (%s) : %s\n", contentType, url)
 		increaseCountData(&countData.contentTypeError)
 		return false
 	}
@@ -659,7 +668,7 @@ func CacheFile(body []byte, resp *http.Response) {
 		URL:            resp.Request.URL.String(),
 		Host:           resp.Request.Host,
 		Dir:            dirName + "/" + sha256,
-		ExpirationTime: getExpirationTime(resp.Header.Get("Cache-Control")),
+		ExpirationTime: GetExpirationTime(resp.Header.Get("Cache-Control")),
 		CachedTime:     time.Now(),
 	}
 
@@ -685,7 +694,7 @@ func CacheFile(body []byte, resp *http.Response) {
 	countData.rwMutex.Unlock()
 }
 
-func getExpirationTime(cacheControl string) time.Time {
+func GetExpirationTime(cacheControl string) time.Time {
 	var exTime time.Time
 
 	if cacheControl != "" {

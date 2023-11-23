@@ -15,7 +15,10 @@ import (
 var (
 	MockedConfig = ConfigMock{
 		c: wcs.ConfigStruct{
-			100000, true, []string{}, false, true, true, 60, "file",
+			100000, true, []string{
+				"cache-exception",
+				"/2016/",
+			}, false, true, true, 60, "file",
 		},
 	}
 	// dummyFileData []byte
@@ -36,23 +39,23 @@ func init() {
 	wcs.InitMutexAndRedis()
 }
 
-func TestIsFileExist(t *testing.T) {
-	// dummy := map[string]bool{
-	// 	"webcacheserver_test.go":   true,
-	// 	"webcacheserver.go":        true,
-	// 	"./test_dir/dummyFile.txt": true,
-	// 	"not_exist_file":           false,
-	// }
+// func TestIsFileExist(t *testing.T) {
+// 	dummy := map[string]bool{
+// 		"wcs_test.go":              true,
+// 		"wcs.go":                   true,
+// 		"./test_dir/dummyFile.txt": true,
+// 		"not_exist_file":           false,
+// 	}
 
-	// for key, val := range dummy {
-	// 	isExist := webcacheserver.IsFileExist(key)
-	// 	if isExist != val {
-	// 		fmt.Printf("key = %s\n", key)
-	// 		t.Error("WrongResult")
-	// 	}
-	// }
+// 	for key, val := range dummy {
+// 		isExist := wcs.IsFileExist(key)
+// 		if isExist != val {
+// 			fmt.Printf("key = %s\n", key)
+// 			t.Error("WrongResult")
+// 		}
+// 	}
 
-}
+// }
 
 func TestGetSha256(t *testing.T) {
 	dummy := map[string]string{
@@ -148,6 +151,23 @@ func TestGzipDecompress(t *testing.T) {
 	}
 }
 
+func TestIsCacheException(t *testing.T) {
+	dummy := map[string]bool{
+		"my-url-cache-exception-...": true,
+		"my-url-cache-not-...":       false,
+		"http://image.gmarket.co.kr/service_image/2019/07/03/20190703151059467460_0_0.jpg": false,
+		"http://image.gmarket.co.kr/service_image/2023/11/20/20231120134632642997_0_0.jpg": false,
+		"http://image.gmarket.co.kr/service_image/2016/11/20/20231120160901321220_0_0.jpg": true,
+	}
+
+	for key, val := range dummy {
+		hk := wcs.IsCacheException(key)
+		if hk != val {
+			t.Error("WrongResult")
+		}
+	}
+}
+
 func TestGetURI(t *testing.T) {
 	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
 	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
@@ -167,6 +187,22 @@ func TestGetURI(t *testing.T) {
 		hk := wcs.GetURI(key)
 		if hk != val {
 			t.Error("WrongResult")
+		}
+	}
+}
+
+func TestGetExpirationTime(t *testing.T) {
+	now := time.Now()
+	dummy := map[string]time.Time{
+		"private, max-age=3600":                           now.Add(time.Second * 3600),
+		"private, max-age=900":                            now.Add(time.Second * 900),
+		"public,max-age=1200,stale-while-revalidate=3600": now.Add(time.Second * 1200),
+		"no-cache": time.Time{},
+	}
+	for key, val := range dummy {
+		hk := wcs.GetExpirationTime(key)
+		if hk.Sub(val) > time.Millisecond {
+			t.Error("Wrong")
 		}
 	}
 }
@@ -211,10 +247,6 @@ func TestGetURI(t *testing.T) {
 // 		// m.bb += 1
 // 		// m.cc += 1
 // 	}
-// }
-
-// func TestCacheFile(t *testing.T) {
-// 	originalSha256 := sha256
 // }
 
 func BenchmarkGoroutine(b *testing.B) {
