@@ -42,20 +42,21 @@ const (
 )
 
 var (
-	rwMutextList      []*sync.RWMutex
-	redisClient       *redis.Client //key = hashKey, field = sha256
-	safeCacheItemList []*safeCacheItem
-	Config            = ConfigStruct{}
-	myLogger          *MyLogger
-	countData         = countDatas{&sync.RWMutex{}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	Workerpool        workerpool.WorkerPool
+	//key = hashKey, field = sha256
+	redisClient      *redis.Client
+	rwMutextList     []*sync.RWMutex
+	cacheItemMapList []*cacheItemMap
+	Config           = ConfigStruct{}
+	myLogger         *MyLogger
+	countData        countDatasForStatusPage
+	Workerpool       workerpool.WorkerPool
 )
 
-type safeCacheItem struct {
-	cacheItemMap map[string]CacheItem
+type cacheItemMap struct {
+	ciMap map[string]CacheItem
 }
 
-type countDatas struct {
+type countDatasForStatusPage struct {
 	rwMutex           *sync.RWMutex
 	sendCache         int
 	cachedFile        int
@@ -146,6 +147,8 @@ func OpenServer() {
 
 	InitWorkerpool()
 
+	InitCountDatas()
+
 	//For test
 	removeDirForTest()
 
@@ -203,8 +206,8 @@ func InitMutexAndRedis() {
 	for i := 0; i < 255; i++ {
 		rw := &sync.RWMutex{}
 		rwMutextList = append(rwMutextList, rw)
-		safeCacheItem := &safeCacheItem{make(map[string]CacheItem)}
-		safeCacheItemList = append(safeCacheItemList, safeCacheItem)
+		ciMap := &cacheItemMap{make(map[string]CacheItem)}
+		cacheItemMapList = append(cacheItemMapList, ciMap)
 	}
 
 	redisClient = redis.NewClient(&redis.Options{
@@ -217,6 +220,10 @@ func InitMutexAndRedis() {
 func InitWorkerpool() {
 	Workerpool = workerpool.NewWorkerPool(255)
 	Workerpool.Run()
+}
+
+func InitCountDatas() {
+	countData = countDatasForStatusPage{&sync.RWMutex{}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 }
 
 func getReverseProxy(host string) *httputil.ReverseProxy {
@@ -477,7 +484,7 @@ func getCacheItem(hashKey int, sha256 string) CacheItem {
 		}
 		json.Unmarshal([]byte(ciJSON), &ci)
 	case STORE_TYPE_FILE:
-		ci = safeCacheItemList[hashKey].cacheItemMap[sha256]
+		ci = cacheItemMapList[hashKey].ciMap[sha256]
 	default:
 		panic("StoreTypeError")
 	}
@@ -577,8 +584,8 @@ func isCacheExist(hashKey int, sha256 string) bool {
 		}
 		return exists
 	case STORE_TYPE_FILE:
-		safeCacheItem := safeCacheItemList[hashKey]
-		cacheItem, exists := safeCacheItem.cacheItemMap[sha256]
+		ciMap := cacheItemMapList[hashKey]
+		cacheItem, exists := ciMap.ciMap[sha256]
 
 		_, err := os.Stat(cacheItem.Dir)
 		return !os.IsNotExist(err) && exists
@@ -683,7 +690,7 @@ func CacheFile(body []byte, resp *http.Response) {
 	case STORE_TYPE_FILE:
 		os.MkdirAll(dirName, os.ModePerm)
 		os.WriteFile(dirName+"/"+sha256, body, 0644)
-		safeCacheItemList[hashKey].cacheItemMap[sha256] = ci
+		cacheItemMapList[hashKey].ciMap[sha256] = ci
 	default:
 		panic("StoreTypeError")
 	}
@@ -719,6 +726,7 @@ func cleanupExpiredCaches() {
 	}
 
 	for range ticker.C {
+		//Run 'removeExpired' function for every cache data
 		doForEachCachedData(LOCK, removeExpired)
 		myLogger.logger.Printf("Cleanup Expired Items\n")
 	}
@@ -732,7 +740,7 @@ func removeCacheFile(hashKey int, sha256 string, url string, logMsg string) {
 			panic(err)
 		}
 	case STORE_TYPE_FILE:
-		ciMap := safeCacheItemList[hashKey].cacheItemMap
+		ciMap := cacheItemMapList[hashKey].ciMap
 		err := os.Remove(ciMap[sha256].Dir)
 		if err != nil {
 			panic(err)
@@ -756,6 +764,7 @@ func logPerSec() {
 func GetSha256(uri string) string {
 	newSha := sha256.New()
 	newSha.Write([]byte(uri))
+	fmt.Printf("1=%s\n2=%s\n3=%s\n", []byte(uri), newSha, newSha.Sum(nil))
 	return hex.EncodeToString(newSha.Sum(nil))
 }
 
@@ -842,7 +851,7 @@ func doForEachCachedData(lock string, do func(hashKey int, sha256 string, ci Cac
 	}
 
 	doFile := func(lock string, do func(hashKey int, sha256 string, ci CacheItem)) {
-		for hashKey, sci := range safeCacheItemList {
+		for hashKey, sci := range cacheItemMapList {
 			switch lock {
 			case LOCK:
 				rwMutextList[hashKey].Lock()
@@ -850,7 +859,7 @@ func doForEachCachedData(lock string, do func(hashKey int, sha256 string, ci Cac
 				rwMutextList[hashKey].RLock()
 			}
 
-			for sha256, ci := range sci.cacheItemMap {
+			for sha256, ci := range sci.ciMap {
 				do(hashKey, sha256, ci)
 			}
 

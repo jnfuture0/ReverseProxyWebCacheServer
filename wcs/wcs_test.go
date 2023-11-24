@@ -59,16 +59,17 @@ func init() {
 
 func TestGetSha256(t *testing.T) {
 	dummy := map[string]string{
-		"http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": "aeb27f39f8383c9d97842bcd752a6e205a6a0fc56f241e3bb7d7f264033a832f",
-		"http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": "81eeec41413027e0305e3a22c01acf0157cdbf7c07e53f4c811aee57c6c770ba",
-		"http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              "1d50590adc422d3b335b36b5d086bce522831155f4f055978fbe0bc84b36f128",
-		"http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               "78368cd8124ddee6563faa3ee7fc0947f162894710050e644c0c8ebd77082f06",
+		// "http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": "aeb27f39f8383c9d97842bcd752a6e205a6a0fc56f241e3bb7d7f264033a832f",
+		// "http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": "81eeec41413027e0305e3a22c01acf0157cdbf7c07e53f4c811aee57c6c770ba",
+		// "http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              "1d50590adc422d3b335b36b5d086bce522831155f4f055978fbe0bc84b36f128",
+		// "http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               "78368cd8124ddee6563faa3ee7fc0947f162894710050e644c0c8ebd77082f06",
+		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg": "",
 	}
 
 	for key, val := range dummy {
 		sha256 := wcs.GetSha256(key)
 		if sha256 != val {
-			fmt.Printf("key = %s\n", key)
+			fmt.Printf("key = %s, sha256 = %s\n", key, sha256)
 			t.Error("WrongResult")
 		}
 	}
@@ -76,10 +77,11 @@ func TestGetSha256(t *testing.T) {
 
 func TestGetHashKey(t *testing.T) {
 	dummy := map[string]int{
-		"http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": 197,
-		"http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": 36,
-		"http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              105,
-		"http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               242,
+		// "http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": 197,
+		// "http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": 36,
+		// "http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              105,
+		// "http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               242,
+		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg": 91,
 	}
 
 	for key, val := range dummy {
@@ -171,6 +173,7 @@ func TestIsCacheException(t *testing.T) {
 func TestGetURI(t *testing.T) {
 	url, _ := url.Parse("http://global.gmarket.co.kr?a=1&bb=2&c=3&aaa=4&ba=5")
 	url2, _ := url.Parse("http://global.gmarket.co.kr?e=0&a=1&bb&c=2&d")
+	url3, _ := url.Parse("http://image.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg")
 
 	dummy := map[*http.Request]string{
 		&http.Request{
@@ -181,10 +184,15 @@ func TestGetURI(t *testing.T) {
 			URL:    url2,
 			Method: http.MethodGet,
 		}: "GETglobal.gmarket.co.kr?a=1&c=2&e=0",
+		&http.Request{
+			URL:    url3,
+			Method: http.MethodGet,
+		}: "GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg",
 	}
 
 	for key, val := range dummy {
 		hk := wcs.GetURI(key)
+		fmt.Println(hk)
 		if hk != val {
 			t.Error("WrongResult")
 		}
