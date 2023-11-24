@@ -36,7 +36,7 @@ func init() {
 	// dummyFileData = []byte(strR)
 
 	wcs.InitWorkerpool()
-	wcs.InitMutexAndRedis()
+	wcs.InitMutexList()
 }
 
 // func TestIsFileExist(t *testing.T) {
@@ -59,17 +59,18 @@ func init() {
 
 func TestGetSha256(t *testing.T) {
 	dummy := map[string]string{
-		// "http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": "aeb27f39f8383c9d97842bcd752a6e205a6a0fc56f241e3bb7d7f264033a832f",
-		// "http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": "81eeec41413027e0305e3a22c01acf0157cdbf7c07e53f4c811aee57c6c770ba",
-		// "http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              "1d50590adc422d3b335b36b5d086bce522831155f4f055978fbe0bc84b36f128",
-		// "http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               "78368cd8124ddee6563faa3ee7fc0947f162894710050e644c0c8ebd77082f06",
-		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg": "",
+		"http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": "aeb27f39f8383c9d97842bcd752a6e205a6a0fc56f241e3bb7d7f264033a832f",
+		"http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": "81eeec41413027e0305e3a22c01acf0157cdbf7c07e53f4c811aee57c6c770ba",
+		"http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              "1d50590adc422d3b335b36b5d086bce522831155f4f055978fbe0bc84b36f128",
+		"http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               "78368cd8124ddee6563faa3ee7fc0947f162894710050e644c0c8ebd77082f06",
+		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg":     "2c5ec2b56c825b7693fee39dab8d3caf788331c989acff96014d665691d53fd7",
+		"GETimage.gmarket.co.kr/service_image/2023/11/17/20231117182746602818_0_0.jpg":     "d6161a76045622b46d007f94955e21b413403c52aa631639946aa87c102bb1ed",
 	}
 
 	for key, val := range dummy {
 		sha256 := wcs.GetSha256(key)
+		fmt.Printf("key = %s, sha256 = %s\n", key, sha256)
 		if sha256 != val {
-			fmt.Printf("key = %s, sha256 = %s\n", key, sha256)
 			t.Error("WrongResult")
 		}
 	}
@@ -77,17 +78,18 @@ func TestGetSha256(t *testing.T) {
 
 func TestGetHashKey(t *testing.T) {
 	dummy := map[string]int{
-		// "http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": 197,
-		// "http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": 36,
-		// "http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              105,
-		// "http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               242,
-		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg": 91,
+		"http://image.gmarket.co.kr/service_image/2023/10/29/20231029235217222142_0_0.jpg": 197,
+		"http://image.gmarket.co.kr/service_image/2023/11/03/20231103133710577882_0_0.jpg": 36,
+		"http://global.gmarket.co.kr/StaticData/GlobalCommonRVIRecomGoods.js":              105,
+		"http://global.gmarket.co.kr/StaticData/GlobalHeaderCommonEnData.js":               242,
+		"GETimage.gmarket.co.kr/service_image/2023/10/27/20231027174714148076_0_0.jpg":     74,
+		"GETimage.gmarket.co.kr/service_image/2023/11/17/20231117182746602818_0_0.jpg":     56,
 	}
 
 	for key, val := range dummy {
 		hk := wcs.GetHashkey(key)
+		fmt.Printf("key = %s, hk = %d\n", key, hk)
 		if hk != val {
-			fmt.Printf("key = %s, hk = %d\n", key, hk)
 			t.Error("WrongResult")
 		}
 	}
