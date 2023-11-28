@@ -10,6 +10,7 @@ services:
     image: wcs_file
     ports:
       - "80:80"
+      - "6060:6060"
     container_name: wcs_container
     volumes:
       - ./wcs:/build/wcs

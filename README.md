@@ -81,6 +81,17 @@
 
 
 
+# Method에 따른 Cache Control
+
+저장
+- GET, HEAD
+
+미저장
+- 그 외
+
+
+
+
 # Config 옵션
 
 - MaxFileSize (int)
@@ -103,6 +114,9 @@
 - CleanupFrequency (int)
     유효시간이 만료된 캐시 데이터의 삭제 빈도. 초 단위.
     60일 경우, 1분마다 만료된 캐시를 삭제함
+- StoreType (string)
+    캐시 데이터를 저장하는 방식 설정.
+    "file" 일 때 파일로 저장, "redis" 일 때 redis에 저장
 
 
 

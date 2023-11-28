@@ -9,5 +9,5 @@
     "QuerySortingEnabled": true,
     "ResponseTimeLoggingEnabled": true,
     "CleanupFrequency": 60,
-    "StoreType": "file"
+    "StoreType": "redis"
 }

@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httputil"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"regexp"
@@ -140,6 +141,8 @@ type htmlReasonsNotCached struct {
 func init() {}
 
 func OpenServer() {
+	initPPROFServer()
+
 	loadConfig()
 
 	InitWorkerpool()
@@ -182,6 +185,12 @@ func OpenServer() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func initPPROFServer() {
+	go func() {
+		http.ListenAndServe(":6060", nil)
+	}()
 }
 
 // 디렉토리가 새로 만들어지는지 확인하기 위해, 프로그램 시작 시 기존 디렉토리 삭제
@@ -257,12 +266,9 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			showStatusPage(w, false)
 		case "/statuspage-with-image":
 			showStatusPage(w, true)
+		case "/purge":
+			handlePurge(w, r)
 		}
-		return
-	}
-
-	if r.Host == CUSTOM_HOST && r.Method == http.MethodDelete && r.URL.Path == "/purge" {
-		handlePurge(w, r)
 		return
 	}
 
@@ -405,6 +411,9 @@ func getConfigDatas() map[string]interface{} {
 }
 
 func handlePurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		return
+	}
 	pattern := r.URL.Query().Get("pattern")
 	compiledPattern, err := regexp.Compile(pattern)
 	if err != nil {
@@ -421,7 +430,6 @@ func handlePurge(w http.ResponseWriter, r *http.Request) {
 			matchCount += 1
 		}
 	}
-
 	doForEachCachedData(LOCK_STRING, removeMatchFile)
 	fmt.Fprintf(w, "Purge Success! (%d items)\n", matchCount)
 }
