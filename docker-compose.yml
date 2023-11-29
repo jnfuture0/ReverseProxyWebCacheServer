@@ -7,15 +7,12 @@ services:
     container_name: redis_container
 
   reverse-proxy:
-    image: wcs_file
+    image: wcs
     ports:
       - "80:80"
       - "6060:6060"
     container_name: wcs_container
     volumes:
       - ./wcs:/build/wcs
-    environment:
-      - KEY1=value1
-      - KEY2=value2
     depends_on:
       - redis

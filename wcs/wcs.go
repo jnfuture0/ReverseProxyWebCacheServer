@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"jnlee/cache"
 	"jnlee/workerpool"
 	"log"
 	"math"
@@ -23,8 +24,6 @@ import (
 	"sync"
 	"text/template"
 	"time"
-
-	"github.com/go-redis/redis"
 )
 
 const (
@@ -43,29 +42,13 @@ const (
 )
 
 var (
-	//key = hashKey, field = sha256
-	redisClient       *redis.Client
-	safeCacheItemList []*safeCacheItem
-	Config            = ConfigStruct{}
-	myLogger          *MyLogger
-	countData         countDatasForStatusPage
-	Workerpool        workerpool.WorkerPool
+	myCache    cache.Cache
+	Config     = ConfigStruct{}
+	myLogger   *MyLogger
+	countData  countDatasForStatusPage
+	Workerpool workerpool.WorkerPool
+	isCached   string
 )
-
-type safeCacheItem struct {
-	rwMutex *sync.RWMutex
-	ciMap   map[string]CacheItem
-}
-
-type CacheItem struct {
-	Header         http.Header
-	Body           []byte
-	URL            string
-	Host           string
-	Dir            string
-	ExpirationTime time.Time
-	CachedTime     time.Time
-}
 
 type countDatasForStatusPage struct {
 	rwMutex           *sync.RWMutex
@@ -141,21 +124,16 @@ type htmlReasonsNotCached struct {
 func init() {}
 
 func OpenServer() {
-	initPPROFServer()
-
 	loadConfig()
+
+	InitCache()
+	defer myCache.Close()
+
+	initPprofServer()
 
 	InitWorkerpool()
 
 	InitCountDatas()
-
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		InitRedis()
-		defer redisClient.Close()
-	case STORE_TYPE_FILE:
-		InitMutexList()
-	}
 
 	//For test
 	removeDirForTest()
@@ -187,7 +165,7 @@ func OpenServer() {
 	}
 }
 
-func initPPROFServer() {
+func initPprofServer() {
 	go func() {
 		http.ListenAndServe(":6060", nil)
 	}()
@@ -195,12 +173,7 @@ func initPPROFServer() {
 
 // 디렉토리가 새로 만들어지는지 확인하기 위해, 프로그램 시작 시 기존 디렉토리 삭제
 func removeDirForTest() {
-	os.RemoveAll(WCS_PATH + "log_body")
-	os.RemoveAll(WCS_PATH + "log_image")
-	os.Remove(WCS_PATH + "log_file.txt")
-	if Config.StoreType == "redis" {
-		redisClient.FlushAll().Result()
-	}
+	myCache.Clear()
 	fmt.Println("Remove All cache")
 }
 
@@ -218,20 +191,16 @@ func loadConfig() {
 	Config = *newConfig
 }
 
-func InitMutexList() {
-	for i := 0; i < 255; i++ {
-		rw := &sync.RWMutex{}
-		ciMap := &safeCacheItem{rw, make(map[string]CacheItem)}
-		safeCacheItemList = append(safeCacheItemList, ciMap)
+func InitCache() {
+	switch Config.StoreType {
+	case STORE_TYPE_REDIS:
+		myCache = &cache.RedisCache{}
+	case STORE_TYPE_FILE:
+		myCache = &cache.FileCache{}
+	default:
+		panic("StoreTypeError")
 	}
-}
-
-func InitRedis() {
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:     "192.168.0.89:6379",
-		Password: "",
-		DB:       0,
-	})
+	myCache.Init()
 }
 
 func InitWorkerpool() {
@@ -279,7 +248,6 @@ func (ph *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hashKey := GetHashkey(uri)
 
 	startTime := time.Now()
-	var isCached string
 	if isCacheExist(hashKey, sha256) {
 		responseByCacheItem(hashKey, sha256, w, r)
 		isCached = CACHED
@@ -312,10 +280,13 @@ func modifyResponse(resp *http.Response) error {
 
 	// Check File Size
 	if len(body) > int(Config.MaxFileSize) {
-		myLogger.logger.Printf("File size over. Do not cache : %s (%d bytes)\n", url.String(), len(body))
+		myLogger.logger.Printf("File size over : %s (%d bytes)\n", url.String(), len(body))
 		increaseCountData(&countData.filesizeError)
 		return nil
 	}
+
+	contentType := resp.Header.Get("Content-Type")
+	myLogger.logger.Printf("Content-Type : %s, %s\n", contentType, url)
 
 	Workerpool.AddTask(func() { CacheFile(body, resp) })
 
@@ -424,31 +395,31 @@ func handlePurge(w http.ResponseWriter, r *http.Request) {
 
 	matchCount := 0
 
-	removeMatchFile := func(hashKey int, sha256 string, ci CacheItem) {
-		if compiledPattern.MatchString(ci.URL) {
-			removeCacheFile(hashKey, sha256, ci.URL, "Purge")
+	cacheDataList := myCache.GetAll()
+	for _, cd := range cacheDataList {
+		if compiledPattern.MatchString(cd.Ci.URL) {
+			removeCacheFile(cd.HashKey, cd.Sha256, cd.Ci.URL, "Purge")
 			matchCount += 1
 		}
 	}
-	doForEachCachedData(LOCK_STRING, removeMatchFile)
 	fmt.Fprintf(w, "Purge Success! (%d items)\n", matchCount)
 }
 
 func getCachedData(showImage bool) (cachedData htmlCacheData) {
 	cachedData.ShowImage = showImage
 
-	appendEachData := func(hashKey int, sha256 string, ci CacheItem) {
-		switch ci.Host {
+	cacheDataList := myCache.GetAll()
+	for _, cd := range cacheDataList {
+		switch cd.Ci.Host {
 		case IMAGE_HOST:
-			cachedData.ImageData = append(cachedData.ImageData, ci.URL)
+			cachedData.ImageData = append(cachedData.ImageData, cd.Ci.URL)
 			cachedData.ImageDataCount += 1
 		default:
-			cachedData.GlobalData = append(cachedData.GlobalData, ci.URL)
+			cachedData.GlobalData = append(cachedData.GlobalData, cd.Ci.URL)
 			cachedData.GlobalDataCount += 1
 		}
 	}
 
-	doForEachCachedData(RLOCK_STRING, appendEachData)
 	sort.Slice(cachedData.ImageData, func(i, j int) bool {
 		return cachedData.ImageData[i] < cachedData.ImageData[j]
 	})
@@ -466,22 +437,11 @@ func getCachedData(showImage bool) (cachedData htmlCacheData) {
 }
 
 func responseByCacheItem(hashKey int, sha256 string, w http.ResponseWriter, r *http.Request) {
-	cacheItem := getCacheItem(hashKey, sha256)
-	var fileBody []byte
-
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		fileBody = cacheItem.Body
-	case STORE_TYPE_FILE:
-		var err error
-		fileBody, err = os.ReadFile(cacheItem.Dir)
-		if err != nil {
-			panic(err)
-		}
-	}
+	cacheItem, _ := myCache.Get(hashKey, sha256)
+	filebody := cacheItem.Body
 
 	if Config.GzipEnabled && getIsGzipAccepted(r) {
-		fileBody = GZip(fileBody)
+		filebody = GZip(filebody)
 		w.Header().Set("Content-Encoding", GZIP)
 	}
 
@@ -493,30 +453,9 @@ func responseByCacheItem(hashKey int, sha256 string, w http.ResponseWriter, r *h
 
 	w.Header().Set("Age", strconv.Itoa(int(time.Since(cacheItem.CachedTime).Seconds())))
 	w.Header().Add("jnlee", "HIT")
-	w.Write(fileBody)
+	w.Write(filebody)
 
 	increaseHitCount(r.Host)
-}
-
-func getCacheItem(hashKey int, sha256 string) CacheItem {
-	var ci CacheItem
-
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		ciJSON, err := redisClient.HGet(strconv.Itoa(hashKey), sha256).Result()
-		if err != nil {
-			panic(err)
-		}
-		json.Unmarshal([]byte(ciJSON), &ci)
-	case STORE_TYPE_FILE:
-		safeCacheItem := safeCacheItemList[hashKey]
-		safeCacheItem.rwMutex.RLock()
-		ci = safeCacheItem.ciMap[sha256]
-		safeCacheItem.rwMutex.RUnlock()
-	default:
-		panic("StoreTypeError")
-	}
-	return ci
 }
 
 func GZip(data []byte) []byte {
@@ -601,24 +540,8 @@ func IsCacheException(url string) bool {
 }
 
 func isCacheExist(hashKey int, sha256 string) bool {
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		exists, err := redisClient.HExists(strconv.Itoa(hashKey), sha256).Result()
-		if err != nil {
-			panic(err)
-		}
-		return exists
-	case STORE_TYPE_FILE:
-		safeCacheItem := safeCacheItemList[hashKey]
-		safeCacheItem.rwMutex.RLock()
-		cacheItem, exists := safeCacheItem.ciMap[sha256]
-		safeCacheItem.rwMutex.RUnlock()
-
-		_, err := os.Stat(cacheItem.Dir)
-		return !os.IsNotExist(err) && exists
-	default:
-		panic("StoreTypeError")
-	}
+	_, exist := myCache.Get(hashKey, sha256)
+	return exist
 }
 
 // StatueCode, Method, Cache-Control, Content-Type 확인
@@ -689,8 +612,9 @@ func CacheFile(body []byte, resp *http.Response) {
 	uri := GetURI(resp.Request)
 	sha256 := GetSha256(uri)
 	hashKey := GetHashkey(uri)
-	ci := CacheItem{
+	ci := cache.CacheItem{
 		Header:         resp.Header,
+		Body:           body,
 		URL:            resp.Request.URL.String(),
 		Host:           resp.Request.Host,
 		ExpirationTime: GetExpirationTime(resp.Header.Get("Cache-Control")),
@@ -698,32 +622,14 @@ func CacheFile(body []byte, resp *http.Response) {
 	}
 
 	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		ci.Body = body
-
-		ciJSON, _ := json.Marshal(ci)
-		err := redisClient.HSet(strconv.Itoa(hashKey), sha256, ciJSON).Err()
-		if err != nil {
-			panic(err)
-		}
 	case STORE_TYPE_FILE:
-		var dirName string
 		if resp.Request.URL.Host == IMAGE_HOST {
-			dirName = WCS_PATH + "log_image"
+			ci.Filepath = WCS_PATH + "log_image/" + sha256
 		} else {
-			dirName = WCS_PATH + "log_body"
+			ci.Filepath = WCS_PATH + "log_body/" + sha256
 		}
-		ci.Dir = dirName + "/" + sha256
-
-		safeCacheItem := safeCacheItemList[hashKey]
-		safeCacheItem.rwMutex.Lock()
-		os.MkdirAll(dirName, os.ModePerm)
-		os.WriteFile(dirName+"/"+sha256, body, 0644)
-		safeCacheItem.ciMap[sha256] = ci
-		safeCacheItem.rwMutex.Unlock()
-	default:
-		panic("StoreTypeError")
 	}
+	myCache.Set(hashKey, sha256, ci)
 
 	increaseCountData(&countData.cachedFile)
 }
@@ -746,36 +652,19 @@ func cleanupExpiredCaches() {
 	ticker := time.NewTicker(time.Second * time.Duration(Config.CleanupFrequency))
 	defer ticker.Stop()
 
-	removeExpired := func(hashKey int, sha256 string, ci CacheItem) {
-		if ci.ExpirationTime.Before(time.Now()) {
-			removeCacheFile(hashKey, sha256, ci.URL, "Expired")
-		}
-	}
-
 	for range ticker.C {
-		//Run 'removeExpired' function for every cache data
-		doForEachCachedData(LOCK_STRING, removeExpired)
+		cacheDataList := myCache.GetAll()
+		for _, cd := range cacheDataList {
+			if cd.Ci.ExpirationTime.Before(time.Now()) {
+				removeCacheFile(cd.HashKey, cd.Sha256, cd.Ci.URL, "Expired")
+			}
+		}
 		myLogger.logger.Printf("Cleanup Expired Items\n")
 	}
 }
 
 func removeCacheFile(hashKey int, sha256 string, url string, logMsg string) {
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		_, err := redisClient.HDel(strconv.Itoa(hashKey), sha256).Result() //_ : 지워진 값 개수
-		if err != nil {
-			panic(err)
-		}
-	case STORE_TYPE_FILE:
-		ciMap := safeCacheItemList[hashKey].ciMap
-		err := os.Remove(ciMap[sha256].Dir)
-		if err != nil {
-			panic(err)
-		}
-		delete(ciMap, sha256)
-	default:
-		panic("StoreTypeError")
-	}
+	myCache.Del(hashKey, sha256)
 	myLogger.logger.Printf("%s) 캐시가 삭제되었습니다 : %s\n", logMsg, url)
 }
 
@@ -824,7 +713,7 @@ func generateLogger(f *os.File) *MyLogger {
 
 func (mLogger *MyLogger) LogElapsedTime(url string, elapsedTime time.Duration) {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Elapsed : %s, %s", url, elapsedTime)
+	fmt.Fprintf(&sb, "ResponseTime : %s, %s", url, elapsedTime)
 	mLogger.logger.Println(sb.String())
 }
 
@@ -844,53 +733,5 @@ func increaseCountData(targets ...*int) {
 	defer countData.rwMutex.Unlock()
 	for _, target := range targets {
 		*target += 1
-	}
-}
-
-func doForEachCachedData(lock string, do func(hashKey int, sha256 string, ci CacheItem)) {
-	doRedis := func(do func(hashKey int, sha256 string, ci CacheItem)) {
-		for hashKey := 0; hashKey < 255; hashKey++ {
-			result, err := redisClient.HGetAll(strconv.Itoa(hashKey)).Result()
-			if err != nil {
-				panic(err)
-			}
-
-			for sha256 := range result {
-				cacheItem := getCacheItem(hashKey, sha256)
-				do(hashKey, sha256, cacheItem)
-			}
-		}
-	}
-
-	doFile := func(lock string, do func(hashKey int, sha256 string, ci CacheItem)) {
-		for hashKey, sci := range safeCacheItemList {
-			rwMutex := sci.rwMutex
-			switch lock {
-			case LOCK_STRING:
-				rwMutex.Lock()
-			case RLOCK_STRING:
-				rwMutex.RLock()
-			}
-
-			for sha256, ci := range sci.ciMap {
-				do(hashKey, sha256, ci)
-			}
-
-			switch lock {
-			case LOCK_STRING:
-				rwMutex.Unlock()
-			case RLOCK_STRING:
-				rwMutex.RUnlock()
-			}
-		}
-	}
-
-	switch Config.StoreType {
-	case STORE_TYPE_REDIS:
-		doRedis(do)
-	case STORE_TYPE_FILE:
-		doFile(lock, do)
-	default:
-		panic("StoreTypeError")
 	}
 }

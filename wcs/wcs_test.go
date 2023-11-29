@@ -36,7 +36,7 @@ func init() {
 	// dummyFileData = []byte(strR)
 
 	wcs.InitWorkerpool()
-	wcs.InitMutexList()
+	wcs.InitCache()
 }
 
 // func TestIsFileExist(t *testing.T) {

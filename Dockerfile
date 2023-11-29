@@ -5,6 +5,7 @@ WORKDIR /build
 
 COPY wcs/ ./wcs/
 COPY workerpool/ ./workerpool/
+COPY cache/ ./cache/
 COPY jnlee.go go.mod go.sum ./
 
 RUN go mod download
